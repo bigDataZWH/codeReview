@@ -1,0 +1,47 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  // ───────────────────────────────────────────────────────────────
+  // Code Review Commands (alternative to .opencode/commands/*.md)
+  // The markdown files in .opencode/commands/ take precedence.
+  // This config is provided as an alternative / programmatic option.
+  // ───────────────────────────────────────────────────────────────
+
+  "command": {
+    "review": {
+      "description": "Review workspace changes (staged + unstaged + untracked)",
+      "agent": "build",
+      "subtask": true
+    },
+    "review-range": {
+      "description": "Review changes between two git refs",
+      "agent": "build",
+      "subtask": true
+    },
+    "review-commit": {
+      "description": "Review a single git commit",
+      "agent": "build",
+      "subtask": true
+    },
+    "review-scan": {
+      "description": "Full-file scan review (no diff needed)",
+      "agent": "build",
+      "subtask": true
+    },
+    "review-rules": {
+      "description": "Display the active review rules configuration"
+    }
+  },
+
+  // ───────────────────────────────────────────────────────────────
+  // Tool permissions for code review
+  // review commands need: read files, grep, glob, bash (for git diff)
+  // ───────────────────────────────────────────────────────────────
+
+  "permission": {
+    "read": "allow",
+    "grep": "allow",
+    "glob": "allow",
+    "bash": "allow"
+  }
+}

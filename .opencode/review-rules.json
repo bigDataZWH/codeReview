@@ -1,0 +1,88 @@
+{
+  "_meta": {
+    "description": "Review rules matched by glob pattern against file path. All matching rules apply cumulatively. Customize freely.",
+    "version": "1.0.0"
+  },
+  "rules": [
+    {
+      "path": "**/*.java",
+      "rule": "Check for: NPE risks (unchecked Optional.get, unguarded null dereference, missing null checks on parameters of public APIs); infinite loops; switch fall-through without break/return; N+1 DB queries in loops; thread-safety issues (shared mutable state without synchronization, non-atomic compound operations); resource leaks (InputStream/Connection not closed in finally/try-with-resources); improper exception handling (swallowed exceptions, catching Throwable/Exception too broadly); SQL injection (string concatenation in queries)."
+    },
+    {
+      "path": "**/*.{ts,tsx,js,jsx,mjs,cjs}",
+      "rule": "Check for: React anti-pattern (missing keys in lists, effect dependency array issues, state mutation, stale closures); async/await misuse (missing try/catch, floating promises without .catch, async functions in useEffect without cleanup); XSS risks (dangerouslySetInnerHTML with unsanitized input, innerHTML assignment); prototype pollution; improper equality checks (== instead of ===, NaN comparison); missing await on async calls; unhandled promise rejections; memory leaks (event listeners/timers not cleaned up in useEffect return)."
+    },
+    {
+      "path": "**/*.kt",
+      "rule": "Check for: null-safety violations (unsafe !! usage, unsafe casts); improper coroutine usage (GlobalScope misuse, missing structured concurrency, blocking calls inside suspend functions); improper scope function usage; unnecessary lateinit; platform type mishandling at Java interop boundaries; missing cancellation checks in long-running coroutines."
+    },
+    {
+      "path": "**/*.go",
+      "rule": "Check for: goroutine leaks (started without context cancellation, no way to stop); data races (shared mutable state accessed from multiple goroutines without sync); defer misuse (deferred Close without checking error, defer in loops); nil pointer dereference (unchecked error returns, unchecked type assertions, accessing fields of possibly-nil pointers); error swallowing (err assigned but not used, _ = err); resource leaks (files/connections not closed on all error paths); context not propagated; unbounded channel operations; incorrect mutex usage (Lock without Unlock, copy of value containing mutex)."
+    },
+    {
+      "path": "**/*.py",
+      "rule": "Check for: mutable default arguments; bare except clauses catching all exceptions including SystemExit/KeyboardInterrupt; improper resource management (files/connections not using context managers); SQL injection (string formatting in queries); shell injection (subprocess with shell=True and user input); mutable global state; off-by-one errors; missing None checks; improper __eq__/__hash__ implementations; pickle deserialization of untrusted data."
+    },
+    {
+      "path": "**/*.rs",
+      "rule": "Check for: unwrap() / expect() on results that can fail; unsafe block misuse; integer overflow in debug vs release; improper lifetime annotations; panics from indexing out of bounds; missing error propagation (? operator); blocking I/O in async contexts."
+    },
+    {
+      "path": "**/*.{c,cpp,cc,h,hpp}",
+      "rule": "Check for: buffer overflows (strcpy, sprintf, gets usage); memory leaks (malloc without matching free, new without delete); use-after-free; double-free; null pointer dereference; missing RAII; improper smart pointer usage (shared_ptr cycles, make_shared benefits ignored); const correctness violations; undefined behavior (signed integer overflow, uninitialized variables, strict aliasing violations); TOCTOU (time-of-check-time-of-use) bugs."
+    },
+    {
+      "path": "**/*.{swift,dart}",
+      "rule": "Check for: force unwrapping of optionals; improper concurrency (data races, missing actor isolation); retain cycles (strong self in closures); improper error handling; resource leaks."
+    },
+    {
+      "path": "**/*.{lua,rb,php,groovy}",
+      "rule": "Check for: logic defects, typos in identifiers, incorrect comparison operators, off-by-one errors, missing nil/null checks, improper error handling, security issues (eval, exec, system with user input)."
+    },
+    {
+      "path": "**/{pom.xml,build.gradle,build.gradle.kts}",
+      "rule": "Check for: SNAPSHOT versions in dependencies; pinned outdated/vulnerable versions; missing dependency scopes; conflicting transitive dependencies; missing checksum/ signature verification."
+    },
+    {
+      "path": "**/package.json",
+      "rule": "Check for: latest or * version ranges; dependency conflicts; missing engines field for Node version constraints; scripts with unsafe shell interpolation; dependencies known for supply-chain risks."
+    },
+    {
+      "path": "**/*mapper*.xml",
+      "rule": "Check for: SQL injection (${} interpolation instead of #{} parameterization); missing parameter type checks; incorrect JDBC type mappings; missing CDATA sections; unescaped XML special characters; performance issues (N+1, missing indexes hints); logic errors in dynamic SQL."
+    },
+    {
+      "path": "**/*dao*.xml",
+      "rule": "Check for: SQL injection risk; incorrect column-to-property mappings; missing nullability annotations; inefficient queries (SELECT *, missing WHERE, cartesian products)."
+    },
+    {
+      "path": "**/*.properties",
+      "rule": "Check for: typos in keys; duplicate keys (last one wins silently); sensitive values hardcoded (passwords, API keys, tokens); missing environment variable placeholders for secrets; locale/resource bundle mismatches."
+    },
+    {
+      "path": "**/*.yml",
+      "rule": "Check for: YAML syntax errors; secret values in plaintext; incorrect boolean interpretation (yes/no/on/off vs true/false); tab indentation (YAML requires spaces); missing schema validation."
+    },
+    {
+      "path": "**/*.yaml",
+      "rule": "Check for: YAML syntax errors; secret values in plaintext; incorrect boolean interpretation; tab indentation; missing schema validation; hard-coded credentials."
+    },
+    {
+      "path": "**/{Dockerfile,Containerfile}",
+      "rule": "Check for: running as root (no USER directive); using :latest tag; secrets baked into image; missing HEALTHCHECK; inefficient layer ordering (COPY before install steps); missing .dockerignore; apt-get without --no-install-recommends and cleanup."
+    },
+    {
+      "path": "**/*.sql",
+      "rule": "Check for: SQL injection; missing transactions for multi-statement operations; missing indexes for JOIN/WHERE columns; SELECT *; no LIMIT on potentially large results; destructive operations without WHERE; missing ON DELETE CASCADE / SET NULL consistency."
+    },
+    {
+      "path": "**/*.{tf,tfvars}",
+      "rule": "Check for: hardcoded secrets; missing state locking; resources without tags; improper depends_on; missing lifecycle blocks; security groups too permissive (0.0.0.0/0); missing encryption at rest; missing version pins on providers."
+    },
+    {
+      "path": "**/*.{sh,bash}",
+      "rule": "Check for: unquoted variables (word splitting, glob expansion); command injection (eval, unsafe $() with user input); missing set -euo pipefail; TOCTOU; insecure /tmp file creation (use mktemp); hardcoded secrets."
+    }
+  ]
+}
