@@ -1,0 +1,30 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "code-reviewer": {
+      "description": "通用代码审查 Agent，关注质量/逻辑/性能/可维护性",
+      "model": "anthropic/claude-sonnet-4-5",
+      "prompt": "You are a senior code reviewer with 15+ years of experience. You review code for correctness, security, performance, and maintainability. Be specific, actionable, and concise. Always reference exact line numbers.",
+      "tools": { "write": false, "edit": false }
+    },
+    "security-reviewer": {
+      "description": "安全专项审查 Agent",
+      "model": "anthropic/claude-opus-4-1-20250805",
+      "prompt": "You are a security audit expert. Follow a three-phase analysis methodology: 1) Repository context research, 2) Comparative diff analysis, 3) Vulnerability assessment. Focus on injection, auth, crypto, data exposure.",
+      "tools": { "write": false, "edit": false }
+    },
+    "impact-analyzer": {
+      "description": "变更影响范围分析 Agent",
+      "model": "anthropic/claude-haiku-4-5",
+      "prompt": "Analyze the blast radius of code changes. Identify all callers, callees, and test files affected by the changes. Provide a risk score from 0-10.",
+      "tools": { "write": false, "edit": false }
+    }
+  },
+  "mcp": {
+    "code-review-graph": {
+      "type": "local",
+      "command": ["code-review-graph", "serve"],
+      "enabled": false
+    }
+  }
+}

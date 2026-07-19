@@ -1,0 +1,29 @@
+[
+  {
+    "id": "STYLE001",
+    "name": "console.log 禁止",
+    "severity": "low",
+    "category": "style",
+    "language": ["javascript", "typescript"],
+    "patterns": [
+      {
+        "type": "regex",
+        "pattern": "console\\.(log|warn|error)\\(",
+        "message": "请移除 console.log 调用或替换为正式日志框架"
+      }
+    ]
+  },
+  {
+    "id": "STYLE002",
+    "name": "TODO + FIXME 同时出现",
+    "severity": "low",
+    "category": "style",
+    "patterns": [
+      {
+        "type": "contains_all",
+        "items": ["TODO", "FIXME"],
+        "message": "同时存在 TODO 和 FIXME，建议统一处理待办标记"
+      }
+    ]
+  }
+]

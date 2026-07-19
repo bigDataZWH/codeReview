@@ -1,0 +1,24 @@
+# 依赖目录
+node_modules/
+vendor/
+third_party/
+
+# 生成文件
+*.generated.*
+*.pb.go
+*.pb.rs
+dist/
+build/
+
+# 锁文件
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# 数据文件
+*.csv
+*.jsonl
+*.parquet
+
+# 迁移文件
+migrations/

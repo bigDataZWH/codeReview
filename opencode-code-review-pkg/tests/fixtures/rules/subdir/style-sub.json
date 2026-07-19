@@ -1,0 +1,1 @@
+{"id":"SUB01","name":"Subdir Rule","severity":"medium","category":"style","patterns":[{"type":"regex","pattern":"var ","message":"Use const instead of var"}]}

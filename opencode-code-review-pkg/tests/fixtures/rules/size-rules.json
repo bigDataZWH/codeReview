@@ -1,0 +1,28 @@
+[
+  {
+    "id": "SIZE001",
+    "name": "大文件变更",
+    "severity": "medium",
+    "category": "maintainability",
+    "patterns": [
+      {
+        "type": "line_count_gt",
+        "threshold": 5,
+        "message": "文件变更行数超过 5 行，请考虑拆分 PR"
+      }
+    ]
+  },
+  {
+    "id": "SIZE002",
+    "name": "大文件 patch",
+    "severity": "low",
+    "category": "maintainability",
+    "patterns": [
+      {
+        "type": "file_size_gt",
+        "threshold": 100,
+        "message": "文件 patch 大小超过 100 字节"
+      }
+    ]
+  }
+]

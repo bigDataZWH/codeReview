@@ -1,0 +1,36 @@
+name: AI Code Review
+on:
+  pull_request:
+    types: [opened, synchronize]
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install opencode-code-review
+        run: npm install -g opencode-code-review
+
+      - name: Run Code Review
+        run: |
+          git diff origin/${{ github.base_ref }}...HEAD | \
+          opencode-code-review review > review-results.json 2>&1 || true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      - name: Publish Review Comments
+        if: always()
+        run: |
+          if [ -f review-results.json ]; then
+            echo "Review results available"
+          fi

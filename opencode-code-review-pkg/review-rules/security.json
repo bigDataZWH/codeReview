@@ -1,0 +1,12 @@
+[
+  {
+    "id": "sql-injection",
+    "name": "SQL 注入检测",
+    "severity": "high",
+    "category": "security",
+    "patterns": [
+      { "type": "regex", "pattern": "(execute|query)\\s*\\(\\s*[\"'].*\\+", "message": "检测到字符串拼接构造 SQL" },
+      { "type": "contains_any", "items": ["String sql =", "const sql =", "sql :="], "message": "检测到直接赋值 SQL 字符串" }
+    ]
+  }
+]

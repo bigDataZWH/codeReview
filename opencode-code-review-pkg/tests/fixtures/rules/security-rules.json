@@ -1,0 +1,43 @@
+[
+  {
+    "id": "SEC001",
+    "name": "禁止硬编码密码",
+    "severity": "high",
+    "category": "security",
+    "language": ["python", "javascript"],
+    "patterns": [
+      {
+        "type": "regex",
+        "pattern": "password\\s*=\\s*['\"][^'\"]+['\"]",
+        "message": "检测到硬编码密码，请使用环境变量或密钥管理服务"
+      }
+    ]
+  },
+  {
+    "id": "SEC002",
+    "name": "禁止 eval",
+    "severity": "critical",
+    "category": "security",
+    "patterns": [
+      {
+        "type": "contains_any",
+        "items": ["eval(", "exec("],
+        "message": "禁止使用 eval/exec，存在代码注入风险"
+      }
+    ]
+  },
+  {
+    "id": "SEC003",
+    "name": "SQL 注入风险",
+    "severity": "high",
+    "category": "security",
+    "language": ["python"],
+    "patterns": [
+      {
+        "type": "regex",
+        "pattern": "execute\\s*\\(.*f['\"]",
+        "message": "检测到可能的 SQL 注入风险，请使用参数化查询"
+      }
+    ]
+  }
+]

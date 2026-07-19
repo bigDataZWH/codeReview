@@ -1,0 +1,13 @@
+[
+  {
+    "id": "xss-innerhtml",
+    "name": "innerHTML XSS 检测",
+    "severity": "high",
+    "category": "security",
+    "language": ["typescript", "javascript"],
+    "patterns": [
+      { "type": "regex", "pattern": "\\.innerHTML\\s*=", "message": "使用 innerHTML 存在 XSS 风险，应使用 textContent 或 DOMPurify" },
+      { "type": "contains_any", "items": ["document.write", "v-html"], "message": "直接渲染 HTML 内容存在 XSS 风险" }
+    ]
+  }
+]

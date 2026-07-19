@@ -1,0 +1,22 @@
+[
+  {
+    "id": "npe-dereference",
+    "name": "空指针解引用检测",
+    "severity": "high",
+    "category": "logic",
+    "language": ["java", "kotlin"],
+    "patterns": [
+      { "type": "regex", "pattern": "\\.(get|toString|equals|hashCode)\\s*\\(", "message": "方法调用前未进行空值检查，可能导致 NullPointerException" }
+    ]
+  },
+  {
+    "id": "npe-optional-chain",
+    "name": "TypeScript 可选链缺失",
+    "severity": "medium",
+    "category": "logic",
+    "language": ["typescript"],
+    "patterns": [
+      { "type": "regex", "pattern": "(\\w+)\\.(\\w+)\\s*\\(", "message": "考虑使用可选链操作符 ?. 防止空值错误" }
+    ]
+  }
+]

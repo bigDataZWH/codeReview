@@ -1,0 +1,12 @@
+[
+  {
+    "id": "thread-shared-mutable",
+    "name": "共享可变状态检测",
+    "severity": "high",
+    "category": "security",
+    "language": ["java", "kotlin", "go", "rust", "cpp"],
+    "patterns": [
+      { "type": "contains_any", "items": ["static mutable", "global var", "AtomicReference", "synchronized"], "message": "检测到共享可变状态，确认线程安全性" }
+    ]
+  }
+]
