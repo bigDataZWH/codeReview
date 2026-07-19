@@ -185,7 +185,6 @@ function generateOpenCodeJsonc(opts: {
   const agents: string[] = [
     `    "code-reviewer": {
       "description": "通用代码审查 Agent（${opts.language}）",
-      "model": "${opts.defaultModel}",
       "prompt": ${JSON.stringify(codeReviewerPrompt)},
       "tools": { "write": false, "edit": false }
     }`,
@@ -194,23 +193,20 @@ function generateOpenCodeJsonc(opts: {
   if (opts.securityReview) {
     agents.push(`    "security-reviewer": {
       "description": "安全专项审查 Agent",
-      "model": "${opts.defaultModel}",
       "prompt": ${JSON.stringify(securityPrompt)},
       "tools": { "write": false, "edit": false }
     }`);
   }
   agents.push(`    "impact-analyzer": {
-      "description": "变更影响范围分析 Agent",
-      "model": "${opts.defaultModel}",
-      "prompt": "Analyze the blast radius of code changes. Identify callers, callees, and tests affected. Provide risk score 0-10.",
-      "tools": { "write": false, "edit": false }
-    }`);
+    "description": "变更影响范围分析 Agent",
+    "prompt": "Analyze the blast radius of code changes. Identify callers, callees, and tests affected. Provide risk score 0-10.",
+    "tools": { "write": false, "edit": false }
+  }`);
   agents.push(`    "reflector": {
-      "description": "反思与置信度评估 Agent",
-      "model": "${opts.defaultModel}",
-      "prompt": "Evaluate aggregated findings for confidence. Apply false-positive heuristics. Output JSON: [{id, confidence}].",
-      "tools": { "write": false, "edit": false }
-    }`);
+    "description": "反思与置信度评估 Agent",
+    "prompt": "Evaluate aggregated findings for confidence. Apply false-positive heuristics. Output JSON: [{id, confidence}].",
+    "tools": { "write": false, "edit": false }
+  }`);
 
   const mcpSection = `"mcp": {
     "code-review-graph": {
@@ -226,6 +222,8 @@ function generateOpenCodeJsonc(opts: {
   // 审查强度: ${opts.reviewStrength}
   // 安全审查: ${opts.securityReview}
   // 图谱: ${opts.graphEnabled}
+  // 顶层 model 字段为 OpenCode 主 agent 模型，所有 agent 自动继承；如需差异化可在 agent 内单独声明 model 覆盖
+  "model": "${opts.defaultModel}",
   "agent": {
 ${agents.join(',\n')}
   },
@@ -235,12 +233,11 @@ ${agents.join(',\n')}
 }
 
 /** 生成 code-reviewer agent 文件 */
-function generateCodeReviewerAgent(language: ProjectLanguage, strength: ReviewStrength, model: string): string {
+function generateCodeReviewerAgent(language: ProjectLanguage, strength: ReviewStrength, _model: string): string {
   const tip = LANGUAGE_TIPS[language];
   const strengthKeyword = STRENGTH_KEYWORDS[strength];
   return `---
 description: 通用代码审查 Agent（${language}）
-model: ${model}
 tools:
   write: false
   edit: false
@@ -266,10 +263,9 @@ Output findings in structured format with severity (critical/high/medium/low) an
 }
 
 /** 生成 security-reviewer agent 文件 */
-function generateSecurityReviewerAgent(model: string): string {
+function generateSecurityReviewerAgent(_model: string): string {
   return `---
 description: 安全专项审查 Agent
-model: ${model}
 tools:
   write: false
   edit: false
@@ -288,10 +284,9 @@ Output JSON array with: file, line, severity, category, description, recommendat
 }
 
 /** 生成 impact-analyzer agent 文件 */
-function generateImpactAnalyzerAgent(model: string): string {
+function generateImpactAnalyzerAgent(_model: string): string {
   return `---
 description: 变更影响范围分析 Agent
-model: ${model}
 tools:
   write: false
   edit: false
@@ -302,10 +297,9 @@ Analyze the blast radius of code changes. Identify all callers, callees, and tes
 }
 
 /** 生成 reflector agent 文件 */
-function generateReflectorAgent(model: string): string {
+function generateReflectorAgent(_model: string): string {
   return `---
 description: 反思与置信度评估 Agent
-model: ${model}
 tools:
   write: false
   edit: false

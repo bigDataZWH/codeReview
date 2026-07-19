@@ -1,6 +1,5 @@
 ---
 description: 反思与置信度评估 Agent
-model: anthropic/claude-haiku-4-5
 tools:
   write: false
   edit: false

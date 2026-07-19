@@ -217,18 +217,22 @@ export type PipelineMiddleware = (ctx: PipelineContext, next: () => Promise<void
 
 实际调用 LLM 完成判别工作。所有 Agent 在 `opencode-config/opencode.jsonc` 中定义，统一以 `tools: { write: false, edit: false }` 配置，**只读不改**。
 
-| Agent | 模型 | 输入 | 输出 |
+#### 顶层主模型继承机制
+
+遵循 [OpenCode 官方约定](https://opencode.ai/docs/config)，`opencode.jsonc` 顶层通过 `"model": "anthropic/claude-sonnet-4-5"` 声明 **主 agent 模型**，所有 agent 不指定 `model` 时自动继承顶层主模型。这种"单一主模型配置源"避免每个 agent 重复声明导致的配置漂移；如需差异化可在 agent 内单独声明 `model` 覆盖顶层主模型。
+
+| Agent | 模型来源 | 输入 | 输出 |
 |---|---|---|---|
-| `code-reviewer` | `claude-sonnet-4-5` | review prompt | findings[] (含 severity / category / suggestion) |
-| `security-reviewer` | `claude-opus-4-1-20250805` | security prompt | findings[] (含 confidence) |
-| `impact-analyzer` | `claude-haiku-4-5` | impact prompt | `BlastRadiusItem[]` + riskScore |
-| `reflector` | `claude-haiku-4-5` | 批量 findings | `[{ id, confidence }]` |
+| `code-reviewer` | 继承顶层 `model` | review prompt | findings[] (含 severity / category / suggestion) |
+| `security-reviewer` | 继承顶层 `model` | security prompt | findings[] (含 confidence) |
+| `impact-analyzer` | 继承顶层 `model` | impact prompt | `BlastRadiusItem[]` + riskScore |
+| `reflector` | 继承顶层 `model` | 批量 findings | `[{ id, confidence }]` |
 
 #### 模型分层与成本控制
 
-`src/token-optimizer.ts` 按代码复杂度（hunk 数 / 行数 / 语言）自动选择模型层级：
+`src/token-optimizer.ts` 按代码复杂度（hunk 数 / 行数 / 语言）自动推荐模型层级（仅用于成本估算，不改变 agent 实际继承的顶层主模型）：
 
-| 复杂度 | 推荐 Tier | 模型 |
+| 复杂度 | 推荐 Tier | 参考模型 |
 |---|---|---|
 | 简单（< 50 行变更） | `haiku` | `claude-haiku-4-5` |
 | 中等 | `sonnet` | `claude-sonnet-4-5` |

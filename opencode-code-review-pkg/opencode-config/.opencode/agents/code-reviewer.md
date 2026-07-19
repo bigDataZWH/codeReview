@@ -1,6 +1,5 @@
 ---
 description: 通用代码审查 Agent
-model: anthropic/claude-sonnet-4-5
 tools:
   write: false
   edit: false

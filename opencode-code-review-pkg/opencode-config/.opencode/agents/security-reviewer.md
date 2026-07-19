@@ -1,6 +1,5 @@
 ---
 description: 安全专项审查 Agent
-model: anthropic/claude-opus-4-1-20250805
 tools:
   write: false
   edit: false

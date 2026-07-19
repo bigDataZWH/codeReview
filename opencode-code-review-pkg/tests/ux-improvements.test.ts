@@ -225,12 +225,32 @@ describe('generateConfig 初始化向导', () => {
     expect(result.files['opencode.jsonc']).toMatch(/"enabled":\s*false|mcp/i);
   });
 
-  it('defaultModel 自定义模型名写入 agent 配置', () => {
+  it('defaultModel 自定义模型名写入顶层 model 字段（非 agent 内）', () => {
     const result = generateConfig({
       language: 'typescript',
       defaultModel: 'anthropic/claude-opus-4-1-20250805',
     });
-    expect(result.files['opencode.jsonc']).toContain('anthropic/claude-opus-4-1-20250805');
+    const jsonc = result.files['opencode.jsonc'];
+    // 顶层 model 字段存在
+    expect(jsonc).toMatch(/"model":\s*"anthropic\/claude-opus-4-1-20250805"/);
+    // agent 内不应再声明 model 字段
+    expect(jsonc).not.toMatch(/"code-reviewer":[\s\S]*?"model":/);
+    expect(jsonc).not.toMatch(/"reflector":[\s\S]*?"model":/);
+  });
+
+  it('不传 defaultModel 时顶层 model 默认为 anthropic/claude-sonnet-4-5', () => {
+    const result = generateConfig({ language: 'typescript' });
+    expect(result.files['opencode.jsonc']).toMatch(
+      /"model":\s*"anthropic\/claude-sonnet-4-5"/,
+    );
+  });
+
+  it('生成的 agent markdown 不再写 model frontmatter（继承顶层主模型）', () => {
+    const result = generateConfig({ language: 'typescript' });
+    const codeReviewer = result.files['.opencode/agents/code-reviewer.md'];
+    expect(codeReviewer).not.toMatch(/^model:/m);
+    const reflector = result.files['.opencode/agents/reflector.md'];
+    expect(reflector).not.toMatch(/^model:/m);
   });
 
   it('deployment 影响 workflow 文件生成', () => {

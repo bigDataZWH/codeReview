@@ -221,14 +221,14 @@ opencode-config/
 
 ### Agent 配置
 
-`opencode.jsonc` 中预置了 4 个 Agent，分别承担不同职责：
+`opencode.jsonc` 顶层通过 `"model": "anthropic/claude-sonnet-4-5"` 声明 **OpenCode 主 agent 模型**，所有 agent 不指定 `model` 时自动继承顶层主模型（[OpenCode 官方约定](https://opencode.ai/docs/config)）。如需差异化，可在 agent 内单独声明 `model` 覆盖顶层主模型。
 
-| Agent | 模型 | 职责 |
+| Agent | 模型来源 | 职责 |
 |---|---|---|
-| `code-reviewer` | `anthropic/claude-sonnet-4-5` | 通用代码审查：质量/逻辑/性能/可维护性 |
-| `security-reviewer` | `anthropic/claude-opus-4-1-20250805` | 安全专项，三层分析方法论 |
-| `impact-analyzer` | `anthropic/claude-haiku-4-5` | 变更影响半径分析，输出风险评分 |
-| `reflector` | `anthropic/claude-haiku-4-5` | 对汇总 findings 做统一置信度评估 |
+| `code-reviewer` | 继承顶层 `model` | 通用代码审查：质量/逻辑/性能/可维护性 |
+| `security-reviewer` | 继承顶层 `model` | 安全专项，三层分析方法论 |
+| `impact-analyzer` | 继承顶层 `model` | 变更影响半径分析，输出风险评分 |
+| `reflector` | 继承顶层 `model` | 对汇总 findings 做统一置信度评估 |
 
 ```jsonc
 // opencode.jsonc 片段

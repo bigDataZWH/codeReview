@@ -1,6 +1,5 @@
 ---
 description: 变更影响范围分析 Agent
-model: anthropic/claude-haiku-4-5
 tools:
   write: false
   edit: false
