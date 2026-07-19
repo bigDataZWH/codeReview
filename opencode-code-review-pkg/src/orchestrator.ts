@@ -432,6 +432,10 @@ export function shouldSkipImpactAnalysis(fileCount: number, threshold: number = 
 export interface BuildReviewDagOptions {
   /** 影响分析阈值（默认 5） */
   impactThreshold?: number;
+  /** 是否包含 AI 审查节点（默认 true）。未配置模型时设为 false 可跳过 AI 节点 */
+  includeAIReviewer?: boolean;
+  /** 是否包含影响分析节点（默认根据文件数动态判断） */
+  includeImpactAnalyzer?: boolean;
 }
 
 /**
@@ -439,8 +443,8 @@ export interface BuildReviewDagOptions {
  *
  * 默认包含：
  * - rule-engine：规则匹配（无依赖）
- * - ai-reviewer：AI 审查（依赖 rule-engine）
- * - impact-analyzer：影响分析（依赖 rule-engine，仅大变更时包含）
+ * - ai-reviewer：AI 审查（依赖 rule-engine，可通过 includeAIReviewer=false 跳过）
+ * - impact-analyzer：影响分析（依赖 rule-engine，仅大变更时包含，可通过 includeImpactAnalyzer 控制）
  *
  * handler 返回空数组占位，由调用方按需替换为真实处理器。
  */
@@ -449,6 +453,9 @@ export function buildReviewDag(
   options?: BuildReviewDagOptions,
 ): DagNode<Finding[]>[] {
   const threshold = options?.impactThreshold ?? DEFAULT_IMPACT_THRESHOLD;
+  const includeAIReviewer = options?.includeAIReviewer ?? true;
+  const includeImpactAnalyzer = options?.includeImpactAnalyzer ?? !shouldSkipImpactAnalysis(diffs.length, threshold);
+
   const nodes: DagNode<Finding[]>[] = [
     {
       id: 'rule-engine',
@@ -456,14 +463,18 @@ export function buildReviewDag(
       dependencies: [],
       handler: async () => [],
     },
-    {
+  ];
+
+  if (includeAIReviewer) {
+    nodes.push({
       id: 'ai-reviewer',
       agentType: 'ai-reviewer',
       dependencies: ['rule-engine'],
       handler: async () => [],
-    },
-  ];
-  if (!shouldSkipImpactAnalysis(diffs.length, threshold)) {
+    });
+  }
+
+  if (includeImpactAnalyzer) {
     nodes.push({
       id: 'impact-analyzer',
       agentType: 'impact-analyzer',
@@ -471,6 +482,7 @@ export function buildReviewDag(
       handler: async () => [],
     });
   }
+
   return nodes;
 }
 

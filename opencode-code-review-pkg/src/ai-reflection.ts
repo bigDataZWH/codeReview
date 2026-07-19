@@ -1,4 +1,5 @@
 import type { Finding, LLMProviderConfig } from './types.js';
+import { isLLMConfigValid } from './types.js';
 
 /**
  * 迭代 7：AI 反思默认置信度阈值。
@@ -178,9 +179,19 @@ const DEFAULT_LLM_TIMEOUT_MS = 2000;
 /**
  * LLM Provider 适配器 — 调用 LLM API 获取反思评估。
  * 支持 OpenAI、Anthropic、Google 三种协议。
+ *
+ * @throws 当配置无效（缺少 provider / apiKey / model）时抛出错误
  */
 export async function callLLM(prompt: string, config: LLMProviderConfig): Promise<string> {
-  const { provider, apiKey, model, baseURL, timeout } = config;
+  if (!isLLMConfigValid(config)) {
+    throw new Error('LLM config is invalid: provider, apiKey, and model are required');
+  }
+
+  const provider = config.provider as 'openai' | 'anthropic' | 'google';
+  const apiKey = config.apiKey as string;
+  const model = config.model as string;
+  const baseURL = config.baseURL;
+  const timeout = config.timeout;
 
   let url: string;
   let body: Record<string, unknown>;
@@ -262,8 +273,11 @@ export async function callLLM(prompt: string, config: LLMProviderConfig): Promis
 /**
  * AI 反思过滤：对每个 finding 调用 LLM 评估置信度，过滤低置信度结果。
  *
+ * 当 LLM 配置无效（缺少 provider / apiKey / model）时，直接返回所有 findings
+ * （降级策略：宁可误报也不漏报），不会抛出错误。
+ *
  * @param findings 待过滤的 findings
- * @param config LLM 配置
+ * @param config LLM 配置（可空，空配置时降级为全保留）
  * @param minConfidence 最低置信度阈值，默认 DEFAULT_REFLECTION_THRESHOLD (0.6)
  * @returns 过滤后的 findings
  */
@@ -274,6 +288,10 @@ export async function reflectFindings(
 ): Promise<Finding[]> {
   if (findings.length === 0) {
     return [];
+  }
+
+  if (!isLLMConfigValid(config)) {
+    return [...findings];
   }
 
   const threshold = minConfidence ?? DEFAULT_REFLECTION_THRESHOLD;

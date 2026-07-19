@@ -719,6 +719,38 @@ describe('buildReviewDag DAG 构建', () => {
     expect(result.errors.size).toBe(0);
     expect(result.results.size).toBe(3);
   });
+
+  it('模型未配置时跳过 ai-reviewer — includeAIReviewer=false', () => {
+    const diffs = Array.from({ length: 6 }, (_, i) => makeFileDiff(`file${i}.ts`));
+    const dag = buildReviewDag(diffs, { includeAIReviewer: false });
+    const ids = dag.map((n) => n.id);
+    expect(ids).toContain('rule-engine');
+    expect(ids).not.toContain('ai-reviewer');
+    expect(ids).toContain('impact-analyzer');
+  });
+
+  it('模型未配置时仅 rule-engine — includeAIReviewer=false + includeImpactAnalyzer=false', () => {
+    const diffs = Array.from({ length: 6 }, (_, i) => makeFileDiff(`file${i}.ts`));
+    const dag = buildReviewDag(diffs, { includeAIReviewer: false, includeImpactAnalyzer: false });
+    const ids = dag.map((n) => n.id);
+    expect(ids).toEqual(['rule-engine']);
+  });
+
+  it('includeImpactAnalyzer=true 时小变更也包含影响分析', () => {
+    const diffs = [makeFileDiff('a.ts')];
+    const dag = buildReviewDag(diffs, { includeImpactAnalyzer: true });
+    const ids = dag.map((n) => n.id);
+    expect(ids).toContain('impact-analyzer');
+  });
+
+  it('仅 rule-engine 的 DAG 可执行', async () => {
+    const diffs = [makeFileDiff('a.ts')];
+    const dag = buildReviewDag(diffs, { includeAIReviewer: false, includeImpactAnalyzer: false });
+    const context: DagContext = { diffs: [], previousResults: new Map() };
+    const result = await executeDag(dag, context);
+    expect(result.errors.size).toBe(0);
+    expect(result.results.size).toBe(1);
+  });
 });
 
 // ============================================================

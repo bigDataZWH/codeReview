@@ -4,8 +4,10 @@ import {
   buildBatchReflectionPrompt,
   parseReflectionResponse,
   reflectFindings,
+  callLLM,
 } from '../src/ai-reflection.js';
 import type { Finding, LLMProviderConfig } from '../src/types.js';
+import { isLLMConfigValid } from '../src/types.js';
 
 // ---- 辅助函数 ----
 
@@ -260,6 +262,50 @@ describe('reflectFindings', () => {
     expect(result[1].file).toBe('src/b.ts');
   });
 
+  it('模型未配置 — config 为空对象时，所有 finding 保留且不调用 fetch', async () => {
+    const findings: Finding[] = [
+      makeFinding({ file: 'src/app.ts', line: 10, message: 'issue 1' }),
+      makeFinding({ file: 'src/b.ts', line: 20, message: 'issue 2' }),
+    ];
+
+    const mockFetch = vi.fn();
+    globalThis.fetch = mockFetch;
+
+    const result = await reflectFindings(findings, {} as LLMProviderConfig, 0.5);
+
+    expect(result).toHaveLength(2);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('模型未配置 — 缺少 model 时降级保留所有 finding', async () => {
+    const findings: Finding[] = [
+      makeFinding({ file: 'src/app.ts', line: 10, message: 'issue 1' }),
+    ];
+
+    const mockFetch = vi.fn();
+    globalThis.fetch = mockFetch;
+
+    const partialConfig: Partial<LLMProviderConfig> = { provider: 'openai', apiKey: 'key' };
+    const result = await reflectFindings(findings, partialConfig as LLMProviderConfig, 0.5);
+
+    expect(result).toHaveLength(1);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('模型未配置 — config 为 undefined 时降级保留所有 finding', async () => {
+    const findings: Finding[] = [
+      makeFinding({ file: 'src/app.ts', line: 10, message: 'issue 1' }),
+    ];
+
+    const mockFetch = vi.fn();
+    globalThis.fetch = mockFetch;
+
+    const result = await reflectFindings(findings, undefined as unknown as LLMProviderConfig, 0.5);
+
+    expect(result).toHaveLength(1);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
   it('空 findings — 直接返回空数组', async () => {
     const mockFetch = vi.fn();
     globalThis.fetch = mockFetch;
@@ -380,5 +426,78 @@ describe('reflectFindings', () => {
     expect(url).toContain('generativelanguage.googleapis.com');
     expect(url).toContain('gemini-1.5-flash');
     expect(result).toHaveLength(1);
+  });
+});
+
+// ==================== callLLM ====================
+describe('callLLM', () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    if (originalFetch) {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('配置为空 — 抛出错误', async () => {
+    await expect(callLLM('test prompt', {} as LLMProviderConfig)).rejects.toThrow(
+      'LLM config is invalid',
+    );
+  });
+
+  it('缺少 model — 抛出错误', async () => {
+    const partialConfig: Partial<LLMProviderConfig> = { provider: 'openai', apiKey: 'key' };
+    await expect(callLLM('test prompt', partialConfig as LLMProviderConfig)).rejects.toThrow(
+      'LLM config is invalid',
+    );
+  });
+
+  it('缺少 apiKey — 抛出错误', async () => {
+    const partialConfig: Partial<LLMProviderConfig> = { provider: 'openai', model: 'gpt-4' };
+    await expect(callLLM('test prompt', partialConfig as LLMProviderConfig)).rejects.toThrow(
+      'LLM config is invalid',
+    );
+  });
+
+  it('缺少 provider — 抛出错误', async () => {
+    const partialConfig: Partial<LLMProviderConfig> = { apiKey: 'key', model: 'gpt-4' };
+    await expect(callLLM('test prompt', partialConfig as LLMProviderConfig)).rejects.toThrow(
+      'LLM config is invalid',
+    );
+  });
+});
+
+// ==================== isLLMConfigValid ====================
+describe('isLLMConfigValid', () => {
+  it('完整配置 — 返回 true', () => {
+    expect(isLLMConfigValid({ provider: 'openai', apiKey: 'key', model: 'gpt-4' })).toBe(true);
+  });
+
+  it('空对象 — 返回 false', () => {
+    expect(isLLMConfigValid({})).toBe(false);
+  });
+
+  it('undefined — 返回 false', () => {
+    expect(isLLMConfigValid(undefined)).toBe(false);
+  });
+
+  it('null — 返回 false', () => {
+    expect(isLLMConfigValid(null)).toBe(false);
+  });
+
+  it('缺少 model — 返回 false', () => {
+    expect(isLLMConfigValid({ provider: 'openai', apiKey: 'key' })).toBe(false);
+  });
+
+  it('缺少 apiKey — 返回 false', () => {
+    expect(isLLMConfigValid({ provider: 'openai', model: 'gpt-4' })).toBe(false);
+  });
+
+  it('缺少 provider — 返回 false', () => {
+    expect(isLLMConfigValid({ apiKey: 'key', model: 'gpt-4' })).toBe(false);
+  });
+
+  it('空字符串 model — 返回 false', () => {
+    expect(isLLMConfigValid({ provider: 'openai', apiKey: 'key', model: '' })).toBe(false);
   });
 });

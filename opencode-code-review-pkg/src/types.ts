@@ -250,15 +250,24 @@ export type AnnotatedBundle = FileBundle;
 /** LLM Provider 配置（用于 AI 反思过滤） */
 export interface LLMProviderConfig {
   /** Provider 类型 */
-  provider: 'openai' | 'anthropic' | 'google';
+  provider?: 'openai' | 'anthropic' | 'google';
   /** API Key */
-  apiKey: string;
+  apiKey?: string;
   /** 模型名称 */
-  model: string;
+  model?: string;
   /** API 基础 URL（可选，用于自定义端点） */
   baseURL?: string;
   /** 请求超时毫秒数 */
   timeout?: number;
+}
+
+/**
+ * 判断 LLM 配置是否有效（provider + apiKey + model 均非空）。
+ * 未配置模型时所有 AI 相关操作将走降级路径。
+ */
+export function isLLMConfigValid(config: Partial<LLMProviderConfig> | undefined | null): boolean {
+  if (!config) return false;
+  return Boolean(config.provider && config.apiKey && config.model);
 }
 
 /** Prompt 构建上下文 */
@@ -268,15 +277,6 @@ export interface PipelineContext {
   annotatedBundles: FileBundle[];
   context?: MCPContextResult;
   customRules?: string;
-}
-
-/** LLM Provider 配置 */
-export interface LLMProviderConfig {
-  provider: 'openai' | 'anthropic' | 'google';
-  apiKey: string;
-  model: string;
-  baseURL?: string;
-  timeout?: number;
 }
 
 /** MCP 客户端配置 */
