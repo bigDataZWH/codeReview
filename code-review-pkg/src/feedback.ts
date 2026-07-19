@@ -14,6 +14,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import type { Finding, Severity } from './types.js';
 import { parseMinimalYaml } from './yaml-lite.js';
 import { globToRegex } from './glob.js';
+import type { ContextLearner } from './context-learner.js';
 
 // ==================== 反馈类型 ====================
 
@@ -440,11 +441,13 @@ export interface MarkFalsePositiveResult extends FeedbackRecord {
  * 1. 在 FeedbackStore 中以 reject 动作记录该 finding 反馈
  * 2. 根据 finding 字段自动生成 IgnoreRule（便于加入忽略配置，下次自动过滤）
  * 3. 返回包含原始记录、忽略规则的结果对象
+ * 4. 若传入 learner，则触发 learnFromFeedback 更新学习到的权重（Task 7）
  *
  * @param store 反馈存储
  * @param findingId 关联的 finding ID
  * @param finding finding 快照（可选；提供时生成忽略规则）
  * @param reason 标记原因（可选；默认使用 DEFAULT_FALSE_POSITIVE_REASON）
+ * @param learner 上下文学习器（可选；提供时触发权重更新）
  * @returns 包含 FeedbackRecord 字段、ignoreRule、record 的结果对象
  */
 export function markFalsePositive(
@@ -452,6 +455,7 @@ export function markFalsePositive(
   findingId: string,
   finding?: Finding,
   reason?: string,
+  learner?: ContextLearner,
 ): MarkFalsePositiveResult {
   const finalReason = reason ?? DEFAULT_FALSE_POSITIVE_REASON;
   const record = store.recordFeedback(findingId, 'reject', finalReason, finding);
@@ -466,6 +470,19 @@ export function markFalsePositive(
     }
     if (finding.severity !== undefined) {
       ignoreRule.severity = finding.severity as Severity | 'info';
+    }
+  }
+
+  // Task 7：在标记误报后触发上下文学习
+  if (learner) {
+    try {
+      learner.learnFromFeedback(store);
+    } catch (err) {
+      // 学习失败不影响标记误报的主流程
+      console.warn(
+        '[feedback] markFalsePositive: learner.learnFromFeedback failed:',
+        err instanceof Error ? err.message : String(err),
+      );
     }
   }
 

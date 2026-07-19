@@ -136,6 +136,8 @@ export interface PipelineConfig {
   batching?: BatchOptions;
   /** 上下文压缩选项（迭代 6） */
   compression?: CompressionOptions;
+  /** Task 18：链路追踪管理器（可选，未提供时使用一次性 TracingManager） */
+  tracer?: import('./tracing.js').TracingManager;
 }
 
 /** 管道缓存选项 */

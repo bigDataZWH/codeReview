@@ -28,6 +28,7 @@ import { matchRules } from './rule-engine.js';
 import { bundleFiles } from './file-filter.js';
 import { callLLM, buildBatchReflectionPrompt } from './ai-reflection.js';
 import { getImpactRadius } from './mcp-adapter.js';
+import { ParallelTuner, getDefaultParallelism } from './parallel-tuner.js';
 
 // ============================================================
 // 审查会话管理器
@@ -928,6 +929,11 @@ export interface BatchProcessOptions {
   batchSize?: number;
   /** 是否并行执行批次，默认 false */
   parallel?: boolean;
+  /** 并行模式下最大并发数（可选）。
+   * 未指定且 parallel=true 时，由 ParallelTuner 基于 diffs 自动调优 */
+  parallelism?: number;
+  /** 是否启用 ParallelTuner 自动调优（默认 true，仅在 parallel=true 时生效） */
+  useTuner?: boolean;
   /** 暂停信号（可选） */
   pauseSignal?: PauseSignal;
   /** 批次处理函数：接收 (batch, batchIndex) 返回 findings */
@@ -944,12 +950,48 @@ export interface BatchProcessResult {
   errors: BatchError[];
   /** 已处理文件总数 */
   totalProcessed: number;
+  /** 实际使用的并行度（仅 parallel=true 时有意义；顺序模式下为 1） */
+  effectiveParallelism?: number;
+}
+
+/**
+ * 以受限并发执行任务数组。
+ *
+ * 同一时刻最多有 `concurrency` 个任务在执行，完成一个立即开始下一个。
+ *
+ * @param items 待处理元素
+ * @param concurrency 最大并发数（>=1）
+ * @param worker 处理函数：接收元素及其原始索引，返回结果
+ * @returns 与 items 同序的结果数组
+ */
+export async function runWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  if (concurrency < 1) concurrency = 1;
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+  const total = items.length;
+
+  async function runSlot(): Promise<void> {
+    while (true) {
+      const idx = nextIndex++;
+      if (idx >= total) return;
+      results[idx] = await worker(items[idx], idx);
+    }
+  }
+
+  const slotCount = Math.min(concurrency, total);
+  await Promise.all(Array.from({ length: slotCount }, () => runSlot()));
+  return results;
 }
 
 /**
  * 将文件列表分批处理。
  *
  * - 支持顺序（默认）和并行两种模式
+ * - 并行模式下可指定 parallelism 限制最大并发；未指定时由 ParallelTuner 自动调优
  * - 支持暂停信号，可在批次间暂停和恢复
  * - 单批次失败不影响其他批次，错误记录在 errors 中
  *
@@ -975,65 +1017,91 @@ export async function batchProcess(
   const allFindings: Finding[] = [];
 
   if (parallel) {
-    // 并行执行所有批次
-    const tasks = batches.map(async (batch, idx) => {
-      // 暂停检查
-      if (pauseSignal) {
-        await pauseSignal.waitWhilePaused();
-      }
-      try {
-        const findings = await options.processFn(batch, idx);
-        return {
-          batchIndex: idx,
-          items: batch,
-          findings,
-          success: true,
-        } as BatchResult;
-      } catch (err) {
-        const error = err instanceof Error ? err : new Error(String(err));
-        errors.push({ batchIndex: idx, error });
-        return {
-          batchIndex: idx,
-          items: batch,
-          findings: [],
-          success: false,
-        } as BatchResult;
-      }
-    });
-    const taskResults = await Promise.all(tasks);
+    // Task 5：并行调优 — 基于 diffs 自动计算并行度
+    let parallelism = options.parallelism;
+    const useTuner = options.useTuner ?? true;
+    if (parallelism === undefined && useTuner) {
+      const tuner = new ParallelTuner();
+      const tuned = tuner.tune(diffs, { ioIntensive: true });
+      parallelism = tuned.parallelism;
+    }
+    if (parallelism === undefined || parallelism < 1) {
+      parallelism = getDefaultParallelism();
+    }
+    // 不超过批次数
+    parallelism = Math.min(parallelism, Math.max(1, batches.length));
+
+    // 受限并发执行批次
+    const taskResults = await runWithConcurrency(
+      batches,
+      parallelism,
+      async (batch, idx): Promise<BatchResult> => {
+        // 暂停检查
+        if (pauseSignal) {
+          await pauseSignal.waitWhilePaused();
+        }
+        try {
+          const findings = await options.processFn(batch, idx);
+          return {
+            batchIndex: idx,
+            items: batch,
+            findings,
+            success: true,
+          };
+        } catch (err) {
+          const error = err instanceof Error ? err : new Error(String(err));
+          errors.push({ batchIndex: idx, error });
+          return {
+            batchIndex: idx,
+            items: batch,
+            findings: [],
+            success: false,
+          };
+        }
+      },
+    );
     for (const r of taskResults) {
       results.push(r);
       allFindings.push(...r.findings);
     }
     // 按 batchIndex 排序保证顺序
     results.sort((a, b) => a.batchIndex - b.batchIndex);
-  } else {
-    // 顺序执行
-    for (let idx = 0; idx < batches.length; idx++) {
-      const batch = batches[idx];
-      // 暂停检查
-      if (pauseSignal) {
-        await pauseSignal.waitWhilePaused();
-      }
-      try {
-        const findings = await options.processFn(batch, idx);
-        results.push({
-          batchIndex: idx,
-          items: batch,
-          findings,
-          success: true,
-        });
-        allFindings.push(...findings);
-      } catch (err) {
-        const error = err instanceof Error ? err : new Error(String(err));
-        errors.push({ batchIndex: idx, error });
-        results.push({
-          batchIndex: idx,
-          items: batch,
-          findings: [],
-          success: false,
-        });
-      }
+
+    const totalProcessed = batches.reduce((s, b) => s + b.length, 0);
+    return {
+      batches: results,
+      allFindings,
+      errors,
+      totalProcessed,
+      effectiveParallelism: parallelism,
+    };
+  }
+
+  // 顺序执行
+  for (let idx = 0; idx < batches.length; idx++) {
+    const batch = batches[idx];
+    // 暂停检查
+    if (pauseSignal) {
+      await pauseSignal.waitWhilePaused();
+    }
+    try {
+      const findings = await options.processFn(batch, idx);
+      results.push({
+        batchIndex: idx,
+        items: batch,
+        findings,
+        success: true,
+      });
+      allFindings.push(...findings);
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      errors.push({ batchIndex: idx, error });
+      results.push({
+        batchIndex: idx,
+        items: batch,
+        findings: [],
+        success: false,
+      });
     }
   }
 
@@ -1045,6 +1113,7 @@ export async function batchProcess(
     allFindings,
     errors,
     totalProcessed,
+    effectiveParallelism: 1,
   };
 }
 

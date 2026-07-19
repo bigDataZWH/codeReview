@@ -18,6 +18,7 @@ import { correctLineLocations, filterFalsePositives } from './post-processor.js'
 import { batchProcess, prioritizeDiffs } from './orchestrator.js';
 import { LARGE_PR_THRESHOLD, DEFAULT_BATCH_SIZE } from './constants.js';
 import { createHash } from 'node:crypto';
+import { TracingManager } from './tracing.js';
 
 /** 计算 key 对应的稳定 SHA-256 hex 哈希 */
 function hashKey(input: string): string {
@@ -48,94 +49,164 @@ export async function runPipeline(
     const cache = config.cache;
     const cacheOpts = config.cacheOptions ?? {};
 
-    // 步骤 1: 解析 diff（带缓存）
-    let allDiffs: FileDiff[];
-    if (cache) {
-      const diffKey = `${CACHE_KEY_PREFIX.diff}${hashKey(diffText)}`;
-      allDiffs = await cache.getOrCreate<FileDiff[]>(diffKey, () => parseDiff(diffText), {
-        ttl: cacheOpts.diffTtlMs,
-      });
-    } else {
-      allDiffs = parseDiff(diffText);
-    }
-
-    // 步骤 2: 过滤文件
-    const filteredDiffs: FileDiff[] = filterFiles(allDiffs, config.filter);
-
-    // 步骤 3: 打包文件
-    const bundles = bundleFiles(filteredDiffs, config.bundle);
-
-    // 步骤 4: 规则匹配标注（带缓存）
-    const rules = config.rules ?? [];
-    const ruleVersion = cacheOpts.ruleVersion ?? 'v1';
-    const annotatedBundles: FileBundle[] = await Promise.all(
-      bundles.map(async (bundle) => {
-        // 无规则时直接返回原 bundle
-        if (rules.length === 0) {
-          return { ...bundle, annotations: [...bundle.annotations] };
-        }
-        if (cache) {
-          // 缓存键：规则版本 + 文件路径 + 文件内容哈希 + 规则集哈希
-          const contentHash = hashKey(
-            JSON.stringify(bundle.primary.hunks.map((h) => h.lines)),
-          );
-          const rulesHash = hashKey(JSON.stringify(rules.map((r) => r.id)));
-          const ruleKey = `${CACHE_KEY_PREFIX.rules}${ruleVersion}:${bundle.primary.path}:${contentHash}:${rulesHash}`;
-          const annotations = await cache.getOrCreate<RuleAnnotation[]>(ruleKey, () =>
-            matchRules(bundle, rules),
-          );
-          return { ...bundle, annotations: [...bundle.annotations, ...annotations] };
-        }
-        const annotations = matchRules(bundle, rules);
-        return { ...bundle, annotations: [...bundle.annotations, ...annotations] };
-      }),
-    );
-
-    // 步骤 5: MCP 上下文（可选，带缓存）
-    let context: MCPContextResult | undefined;
-    if (config.mcpEnabled) {
-      const filePaths = filteredDiffs.map((d) => d.path);
-      if (cache) {
-        const mcpKey = `${CACHE_KEY_PREFIX.mcp}${hashKey(filePaths.join('\n'))}`;
-        context = await cache.getOrCreate<MCPContextResult>(
-          mcpKey,
-          () => getReviewContext(filePaths, config.mcpEndpoint),
-          { ttl: cacheOpts.mcpTtlMs },
-        );
-      } else {
-        context = await getReviewContext(filePaths, config.mcpEndpoint);
-      }
-    }
-
-    // 步骤 6: 构建 prompt
-    const prompt = buildReviewPrompt({
-      filteredDiffs,
-      bundles,
-      annotatedBundles,
-      context,
+    // Task 18：链路追踪 — 在每个关键步骤创建 span
+    const tracer = config.tracer ?? new TracingManager();
+    const rootSpan = tracer.startSpan('pipeline.run', {
+      attributes: {
+        diffTextLength: diffText.length,
+        dryRun: config.dryRun ?? false,
+        mcpEnabled: config.mcpEnabled ?? false,
+      },
     });
 
-    // dry-run: 只执行到 prompt 构建阶段 (Round 65)
-    if (config.dryRun) {
+    try {
+      // 步骤 1: 解析 diff（带缓存）
+      let allDiffs: FileDiff[];
+      const parseSpan = tracer.startSpan('parseDiff', {
+        parentSpanId: rootSpan.spanId,
+        attributes: { diffTextLength: diffText.length },
+      });
+      try {
+        if (cache) {
+          const diffKey = `${CACHE_KEY_PREFIX.diff}${hashKey(diffText)}`;
+          allDiffs = await cache.getOrCreate<FileDiff[]>(diffKey, () => parseDiff(diffText), {
+            ttl: cacheOpts.diffTtlMs,
+          });
+        } else {
+          allDiffs = parseDiff(diffText);
+        }
+        tracer.setAttribute(parseSpan, 'diffsCount', allDiffs.length);
+        tracer.endSpan(parseSpan);
+      } catch (err) {
+        tracer.endSpan(parseSpan, err as Error);
+        throw err;
+      }
+
+      // 步骤 2: 过滤文件
+      let filteredDiffs: FileDiff[];
+      const filterSpan = tracer.startSpan('filterFiles', {
+        parentSpanId: rootSpan.spanId,
+      });
+      try {
+        filteredDiffs = filterFiles(allDiffs, config.filter);
+        tracer.setAttribute(filterSpan, 'filteredDiffsCount', filteredDiffs.length);
+        tracer.endSpan(filterSpan);
+      } catch (err) {
+        tracer.endSpan(filterSpan, err as Error);
+        throw err;
+      }
+
+      // 步骤 3: 打包文件
+      const bundles = bundleFiles(filteredDiffs, config.bundle);
+
+      // 步骤 4: 规则匹配标注（带缓存）
+      const rules = config.rules ?? [];
+      const ruleVersion = cacheOpts.ruleVersion ?? 'v1';
+      const ruleMatchSpan = tracer.startSpan('matchRules', {
+        parentSpanId: rootSpan.spanId,
+        attributes: {
+          bundlesCount: bundles.length,
+          rulesCount: rules.length,
+        },
+      });
+      let annotatedBundles: FileBundle[];
+      try {
+        annotatedBundles = await Promise.all(
+          bundles.map(async (bundle) => {
+            // 无规则时直接返回原 bundle
+            if (rules.length === 0) {
+              return { ...bundle, annotations: [...bundle.annotations] };
+            }
+            if (cache) {
+              // 缓存键：规则版本 + 文件路径 + 文件内容哈希 + 规则集哈希
+              const contentHash = hashKey(
+                JSON.stringify(bundle.primary.hunks.map((h) => h.lines)),
+              );
+              const rulesHash = hashKey(JSON.stringify(rules.map((r) => r.id)));
+              const ruleKey = `${CACHE_KEY_PREFIX.rules}${ruleVersion}:${bundle.primary.path}:${contentHash}:${rulesHash}`;
+              const annotations = await cache.getOrCreate<RuleAnnotation[]>(ruleKey, () =>
+                matchRules(bundle, rules),
+              );
+              return { ...bundle, annotations: [...bundle.annotations, ...annotations] };
+            }
+            const annotations = matchRules(bundle, rules);
+            return { ...bundle, annotations: [...bundle.annotations, ...annotations] };
+          }),
+        );
+        const totalAnnotations = annotatedBundles.reduce(
+          (sum, b) => sum + b.annotations.length,
+          0,
+        );
+        tracer.setAttribute(ruleMatchSpan, 'annotationsCount', totalAnnotations);
+        tracer.endSpan(ruleMatchSpan);
+      } catch (err) {
+        tracer.endSpan(ruleMatchSpan, err as Error);
+        throw err;
+      }
+
+      // 步骤 5: MCP 上下文（可选，带缓存）
+      let context: MCPContextResult | undefined;
+      if (config.mcpEnabled) {
+        const filePaths = filteredDiffs.map((d) => d.path);
+        if (cache) {
+          const mcpKey = `${CACHE_KEY_PREFIX.mcp}${hashKey(filePaths.join('\n'))}`;
+          context = await cache.getOrCreate<MCPContextResult>(
+            mcpKey,
+            () => getReviewContext(filePaths, config.mcpEndpoint),
+            { ttl: cacheOpts.mcpTtlMs },
+          );
+        } else {
+          context = await getReviewContext(filePaths, config.mcpEndpoint);
+        }
+      }
+
+      // 步骤 6: 构建 prompt
+      const promptSpan = tracer.startSpan('buildPrompt', {
+        parentSpanId: rootSpan.spanId,
+      });
+      let prompt: string;
+      try {
+        prompt = buildReviewPrompt({
+          filteredDiffs,
+          bundles,
+          annotatedBundles,
+          context,
+        });
+        tracer.setAttribute(promptSpan, 'promptLength', prompt.length);
+        tracer.endSpan(promptSpan);
+      } catch (err) {
+        tracer.endSpan(promptSpan, err as Error);
+        throw err;
+      }
+
+      tracer.setAttribute(rootSpan, 'durationMs', performance.now() - startTime);
+      tracer.endSpan(rootSpan);
+
+      // dry-run: 只执行到 prompt 构建阶段 (Round 65)
+      if (config.dryRun) {
+        return {
+          filteredDiffs,
+          bundles,
+          annotatedBundles,
+          context,
+          prompt,
+          findings: [],
+          durationMs: performance.now() - startTime,
+        };
+      }
+
       return {
         filteredDiffs,
         bundles,
         annotatedBundles,
         context,
         prompt,
-        findings: [],
         durationMs: performance.now() - startTime,
       };
+    } catch (err) {
+      tracer.endSpan(rootSpan, err as Error);
+      throw err;
     }
-
-    return {
-      filteredDiffs,
-      bundles,
-      annotatedBundles,
-      context,
-      prompt,
-      durationMs: performance.now() - startTime,
-    };
   };
 
   // 超时控制

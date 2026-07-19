@@ -61,6 +61,30 @@ subtask: true
 - 各批次并行执行以提升效率
 - 最终合并所有批次的 findings
 
+### 增量审查（--incremental）
+当 `--incremental` 标志启用时，审查流程仅对自上次审查以来发生变更的文件执行审查：
+
+1. **加载上次审查状态**：从状态文件（默认 `.code-review-incremental.json`，可通过 `--state-file` 自定义）读取上次审查保存的文件哈希和 findings
+2. **计算增量 diff**：对当前 diff 中的每个文件计算内容哈希，与上次审查的哈希对比，识别变更 / 未变更 / 新增 / 删除文件
+3. **仅审查变更文件**：将变更文件的 diff 序列化后传入审查管道，未变更文件直接复用上次审查的 findings
+4. **合并 findings**：丢弃变更文件的旧 findings（已被本次审查结果替换），保留未变更文件的旧 findings，追加本次审查的新 findings
+5. **保存新状态**：将当前文件哈希和合并后的 findings 写回状态文件，供下次增量审查使用
+
+使用场景：
+- 重复审查同一 PR 的新增提交时跳过未变更文件
+- 大型 PR 多轮迭代审查时复用上次结果降低 LLM 调用成本
+
+```bash
+# 增量审查：仅审查变更文件
+code-review review --incremental
+
+# 指定状态文件路径
+code-review review --incremental --state-file /tmp/review-state.json
+
+# 增量审查 + 端到端执行（合并新旧 findings 输出 JSON）
+code-review review --incremental --execute --llm-config '{"provider":"openai","apiKey":"KEY","model":"gpt-4"}'
+```
+
 ### 审查要求
 对每个文件中的变更进行审查，覆盖以下维度：
 

@@ -1,5 +1,6 @@
 import type { Finding, LLMProviderConfig } from './types.js';
 import { isLLMConfigValid } from './types.js';
+import { ModelRouter, type RoutingResult } from './model-router.js';
 
 /**
  * 迭代 7：AI 反思默认置信度阈值。
@@ -310,4 +311,130 @@ export async function reflectFindings(
     console.warn('[ai-reflection] reflectFindings LLM call failed, returning all findings:', err);
     return [...findings];
   }
+}
+
+// ==================== Task 8：模型路由集成 ====================
+
+/**
+ * 模型分级 → LLM 配置映射。
+ *
+ * 用于 reflectFindingsWithRouter：根据 finding 复杂度选择对应分级的 LLM 配置。
+ * 缺失某分级时降级为 fallback 配置（若有）。
+ */
+export type ModelConfigMap = Partial<{
+  small: LLMProviderConfig;
+  medium: LLMProviderConfig;
+  large: LLMProviderConfig;
+}>;
+
+/** reflectFindingsWithRouter 返回的额外元信息 */
+export interface ReflectWithRouterResult {
+  /** 通过反思过滤的 findings */
+  findings: Finding[];
+  /** 每条 finding 的路由结果（顺序与输入一致） */
+  routings: RoutingResult[];
+  /** 各模型分级处理的 finding 数量 */
+  sizeCounts: Record<string, number>;
+}
+
+/**
+ * 根据路由结果选择有效的 LLM 配置。
+ *
+ * 选择优先级：
+ * 1. 该分级的配置（若有效）
+ * 2. 更高分级的配置（large → medium → small，向大降级）
+ * 3. 任一有效配置
+ * 4. 都无效 → 返回 undefined
+ */
+function pickConfigForSize(
+  size: 'small' | 'medium' | 'large',
+  configMap: ModelConfigMap,
+): LLMProviderConfig | undefined {
+  const order: Array<'small' | 'medium' | 'large'> = ['large', 'medium', 'small'];
+  // 先尝试精确匹配，再向 large 方向降级
+  const candidates: Array<'small' | 'medium' | 'large'> = [size, ...order.filter((s) => s !== size)];
+  for (const s of candidates) {
+    const cfg = configMap[s];
+    if (cfg && isLLMConfigValid(cfg)) return cfg;
+  }
+  return undefined;
+}
+
+/**
+ * 基于模型路由的反思过滤（Task 8）。
+ *
+ * 工作流程：
+ * 1. 使用 ModelRouter 为每条 finding 路由出对应模型分级
+ * 2. 按模型分级分组 findings
+ * 3. 对每组 findings 调用对应 LLM 配置进行反思过滤
+ * 4. 合并结果（保持原 findings 顺序）
+ * 5. 某组 LLM 不可用时降级为该组全保留
+ *
+ * @param findings 待过滤的 findings
+ * @param router 模型路由器实例
+ * @param configMap 各分级的 LLM 配置
+ * @param minConfidence 最低置信度阈值
+ * @returns 反思过滤结果（含路由元信息）
+ */
+export async function reflectFindingsWithRouter(
+  findings: Finding[],
+  router: ModelRouter,
+  configMap: ModelConfigMap,
+  minConfidence?: number,
+): Promise<ReflectWithRouterResult> {
+  if (findings.length === 0) {
+    return { findings: [], routings: [], sizeCounts: {} };
+  }
+
+  // 1. 路由 + 分组
+  const routings: RoutingResult[] = [];
+  const groups = new Map<string, { findings: Finding[]; indices: number[] }>();
+  for (let i = 0; i < findings.length; i++) {
+    const f = findings[i];
+    const r = router.routeByComplexity(f);
+    routings.push(r);
+    const key = r.size;
+    if (!groups.has(key)) groups.set(key, { findings: [], indices: [] });
+    const g = groups.get(key)!;
+    g.findings.push(f);
+    g.indices.push(i);
+  }
+
+  const threshold = minConfidence ?? DEFAULT_REFLECTION_THRESHOLD;
+  const sizeCounts: Record<string, number> = {};
+  for (const r of routings) {
+    sizeCounts[r.size] = (sizeCounts[r.size] ?? 0) + 1;
+  }
+
+  // 2. 对每组调用对应 LLM 配置
+  // 结果按原索引写入 kept 数组，保持顺序
+  const kept: boolean[] = new Array(findings.length).fill(true);
+
+  for (const [size, group] of groups.entries()) {
+    const cfg = pickConfigForSize(size as 'small' | 'medium' | 'large', configMap);
+    if (!cfg) {
+      // 该组无可用 LLM 配置：全保留（降级策略）
+      for (const idx of group.indices) kept[idx] = true;
+      continue;
+    }
+    try {
+      const prompt = buildBatchReflectionPrompt(group.findings);
+      const responseText = await callLLM(prompt, cfg);
+      group.findings.forEach((_f, localIdx) => {
+        const origIdx = group.indices[localIdx];
+        const confidence = parseReflectionResponse(responseText, localIdx);
+        kept[origIdx] = confidence >= threshold;
+      });
+    } catch (err) {
+      console.warn(
+        `[ai-reflection] reflectFindingsWithRouter: LLM call failed for size=${size}, returning all findings in this group:`,
+        err,
+      );
+      // 降级：该组全保留
+      for (const idx of group.indices) kept[idx] = true;
+    }
+  }
+
+  const resultFindings = findings.filter((_f, idx) => kept[idx]);
+  return { findings: resultFindings, routings, sizeCounts };
 }
