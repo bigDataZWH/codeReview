@@ -13,12 +13,11 @@ import { parseDiff } from './diff-parser.js';
 import { filterFiles, bundleFiles } from './file-filter.js';
 import { matchRules } from './rule-engine.js';
 import { buildReviewPrompt, buildSecurityPrompt } from './prompt-builder.js';
-import { getReviewContext, getReviewContextWithCache } from './mcp-adapter.js';
+import { getReviewContext } from './mcp-adapter.js';
 import { correctLineLocations, filterFalsePositives } from './post-processor.js';
 import { batchProcess, prioritizeDiffs } from './orchestrator.js';
 import { LARGE_PR_THRESHOLD, DEFAULT_BATCH_SIZE } from './constants.js';
 import { createHash } from 'node:crypto';
-import type { CacheManager } from './cache.js';
 
 /** 计算 key 对应的稳定 SHA-256 hex 哈希 */
 function hashKey(input: string): string {
@@ -53,7 +52,7 @@ export async function runPipeline(
     let allDiffs: FileDiff[];
     if (cache) {
       const diffKey = `${CACHE_KEY_PREFIX.diff}${hashKey(diffText)}`;
-      allDiffs = cache.getOrCreate<FileDiff[]>(diffKey, () => parseDiff(diffText), {
+      allDiffs = await cache.getOrCreate<FileDiff[]>(diffKey, () => parseDiff(diffText), {
         ttl: cacheOpts.diffTtlMs,
       });
     } else {
@@ -82,7 +81,7 @@ export async function runPipeline(
           );
           const rulesHash = hashKey(JSON.stringify(rules.map((r) => r.id)));
           const ruleKey = `${CACHE_KEY_PREFIX.rules}${ruleVersion}:${bundle.primary.path}:${contentHash}:${rulesHash}`;
-          const annotations = cache.getOrCreate<RuleAnnotation[]>(ruleKey, () =>
+          const annotations = await cache.getOrCreate<RuleAnnotation[]>(ruleKey, () =>
             matchRules(bundle, rules),
           );
           return { ...bundle, annotations: [...bundle.annotations, ...annotations] };

@@ -115,7 +115,7 @@ export type ProgressListener<K extends ProgressEvent> = (
  */
 export class ProgressEmitter {
   /** 事件 → 监听器集合 */
-  private listeners: Map<ProgressEvent, Set<ProgressListener<ProgressEvent>>> = new Map();
+  private listeners: Map<ProgressEvent, Set<ListenerEntry>> = new Map();
   /** 总文件数（来自 start 事件） */
   private totalFiles = 0;
   /** 已处理文件数（file-complete + file-error） */
@@ -165,7 +165,7 @@ export class ProgressEmitter {
     let set = this.listeners.get(event);
     if (!set) {
       set = new Set();
-      this.listeners.set(event, set as Set<ProgressListener<ProgressEvent>>);
+      this.listeners.set(event, set);
     }
     // once 包装：触发后自动 off
     const entry: ListenerEntry = once
@@ -174,15 +174,15 @@ export class ProgressEmitter {
           fn: ((payload: ProgressPayloadMap[K]) => {
             this.off(event, listener);
             listener(payload);
-          }) as ProgressListener<K>,
-          wrapped: listener,
+          }) as unknown as ProgressListener<ProgressEvent>,
+          wrapped: listener as unknown as ProgressListener<ProgressEvent>,
         }
       : {
           once: false,
           fn: listener as ProgressListener<ProgressEvent>,
           wrapped: undefined,
         };
-    set.add(entry as unknown as ProgressListener<ProgressEvent>);
+    set.add(entry);
     return this;
   }
 
@@ -205,9 +205,8 @@ export class ProgressEmitter {
     // 拷贝一份避免 once 触发时迭代过程中修改集合
     const list = Array.from(set);
     for (const entry of list) {
-      const e = entry as unknown as ListenerEntry;
       try {
-        e.fn(payload as ProgressPayloadMap[ProgressEvent]);
+        entry.fn(payload as ProgressPayloadMap[ProgressEvent]);
       } catch {
         // 监听器异常吞掉，不影响其他监听器与主流程
       }

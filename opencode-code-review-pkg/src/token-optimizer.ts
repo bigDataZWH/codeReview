@@ -12,7 +12,7 @@
 // - 安全风险强制升级到 large 模型，避免漏报
 // - token 估算使用简单的字符数 / 4 启发式，与现有 prompt-builder.estimatePromptTokens 保持一致
 
-import type { FileDiff, Hunk, DiffLine } from './types.js';
+import type { FileDiff, Hunk } from './types.js';
 
 /** 模型分级 */
 export type ModelTierName = 'small' | 'medium' | 'large' | string;

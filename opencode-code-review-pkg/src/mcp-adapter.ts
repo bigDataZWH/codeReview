@@ -257,14 +257,14 @@ function mapBlastRadius(raw: unknown): BlastRadiusItem[] {
 /** MCP 上下文缓存键前缀 */
 const MCP_CACHE_PREFIX = 'ocr:mcp:ctx:';
 
-/** 模块级缓存实例（可选，由调用方通过 getReviewContextWithCache 注入） */
-let moduleCache: CacheManager | undefined;
-
 /**
- * 重置 MCP 上下文模块级缓存状态（仅供测试）。
+ * 重置 MCP 上下文模块级缓存状态（仅供测试，保留以兼容既有测试调用）。
+ *
+ * 注：缓存实例由调用方通过 getReviewContextWithCache 的 cache 参数注入，
+ * 模块本身不再持有可变状态，因此本函数为空操作。
  */
 export function _resetMCPContextCache(): void {
-  moduleCache = undefined;
+  // no-op：保留导出以兼容测试调用
 }
 
 /**
@@ -294,7 +294,6 @@ export async function getReviewContextWithCache(
   if (!cache) {
     return getReviewContext(filePaths, mcpEndpoint);
   }
-  moduleCache = cache;
   const key = `${MCP_CACHE_PREFIX}${hashKey(filePaths.join('\n'))}`;
   return cache.getOrCreate<MCPContextResult>(
     key,
