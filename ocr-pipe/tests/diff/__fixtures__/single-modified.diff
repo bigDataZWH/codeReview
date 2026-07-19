@@ -1,0 +1,11 @@
+diff --git a/src/utils/helper.py b/src/utils/helper.py
+index 1234567..abcdefg 100644
+--- a/src/utils/helper.py
++++ b/src/utils/helper.py
+@@ -10,4 +10,5 @@ def process(data):
+     result = []
+     for item in data:
+-        result.append(item.value)
++        if item is not None:
++            result.append(item.value)
+     return result

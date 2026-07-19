@@ -1,0 +1,11 @@
+diff --git a/src/legacy/old.py b/src/legacy/old.py
+deleted file mode 100644
+index 1234567..0000000
+--- a/src/legacy/old.py
++++ /dev/null
+@@ -1,5 +0,0 @@
+-import os
+-
+-def old_function():
+-    pass
+-
