@@ -3,6 +3,7 @@ import {
   correctLineLocations,
   filterFalsePositives,
   deduplicateFindings,
+  computeTextOverlap,
   BUILTIN_FP_RULES,
   filterBySeverity,
   groupByFile,
@@ -797,5 +798,223 @@ describe('truncateFindings', () => {
     const result = truncateFindings(findings, 0);
     expect(result).toHaveLength(1);
     expect(result[0].category).toBe('_truncation');
+  });
+});
+
+// ==================== BUILTIN_FP_RULES extended (Task 17: 5 new rules) ====================
+describe('BUILTIN_FP_RULES extended (5 new rules)', () => {
+  it('filters "should add error handling" suggestions', () => {
+    const findings: Finding[] = [
+      makeFinding({
+        file: 'a.ts',
+        line: 1,
+        severity: 'low',
+        category: 'quality',
+        message: 'Should add error handling for this code',
+        confidence: 0.7,
+        source: 'ai',
+      }),
+    ];
+    const filtered = filterFalsePositives(findings);
+    expect(filtered.length).toBe(0); // 被过滤
+  });
+
+  it('error handling rule 不误过滤高置信度真问题', () => {
+    const findings: Finding[] = [
+      makeFinding({
+        file: 'a.ts',
+        line: 1,
+        severity: 'high',
+        category: 'security',
+        message: 'Missing error handling causes unhandled promise rejection',
+        confidence: 0.9,
+        source: 'rule',
+      }),
+    ];
+    const filtered = filterFalsePositives(findings);
+    expect(filtered.length).toBe(1); // 保留
+  });
+
+  it('filters "empty catch block" suggestions', () => {
+    const findings: Finding[] = [
+      makeFinding({
+        file: 'a.ts',
+        line: 1,
+        severity: 'low',
+        category: 'quality',
+        message: 'Empty catch block detected here',
+        confidence: 0.7,
+        source: 'ai',
+      }),
+    ];
+    const filtered = filterFalsePositives(findings);
+    expect(filtered.length).toBe(0); // 被过滤
+  });
+
+  it('empty catch rule 不误过滤高置信度真问题', () => {
+    const findings: Finding[] = [
+      makeFinding({
+        file: 'a.ts',
+        line: 1,
+        severity: 'high',
+        category: 'security',
+        message: 'Empty catch block swallows security exception',
+        confidence: 0.9,
+        source: 'rule',
+      }),
+    ];
+    const filtered = filterFalsePositives(findings);
+    expect(filtered.length).toBe(1); // 保留
+  });
+
+  it('filters "potential null reference" suggestions', () => {
+    const findings: Finding[] = [
+      makeFinding({
+        file: 'a.ts',
+        line: 1,
+        severity: 'low',
+        category: 'quality',
+        message: 'Potential null reference in this expression',
+        confidence: 0.7,
+        source: 'ai',
+      }),
+    ];
+    const filtered = filterFalsePositives(findings);
+    expect(filtered.length).toBe(0); // 被过滤
+  });
+
+  it('null reference rule 不误过滤高置信度真问题', () => {
+    const findings: Finding[] = [
+      makeFinding({
+        file: 'a.ts',
+        line: 1,
+        severity: 'critical',
+        category: 'security',
+        message: 'Null reference dereference leads to crash',
+        confidence: 0.9,
+        source: 'rule',
+      }),
+    ];
+    const filtered = filterFalsePositives(findings);
+    expect(filtered.length).toBe(1); // 保留
+  });
+
+  it('filters "unused variable" suggestions', () => {
+    const findings: Finding[] = [
+      makeFinding({
+        file: 'a.ts',
+        line: 1,
+        severity: 'low',
+        category: 'quality',
+        message: 'Unused variable foo detected',
+        confidence: 0.7,
+        source: 'ai',
+      }),
+    ];
+    const filtered = filterFalsePositives(findings);
+    expect(filtered.length).toBe(0); // 被过滤
+  });
+
+  it('unused variable rule 不误过滤高置信度真问题', () => {
+    const findings: Finding[] = [
+      makeFinding({
+        file: 'a.ts',
+        line: 1,
+        severity: 'high',
+        category: 'security',
+        message: 'Unused variable holds sensitive credential',
+        confidence: 0.9,
+        source: 'rule',
+      }),
+    ];
+    const filtered = filterFalsePositives(findings);
+    expect(filtered.length).toBe(1); // 保留
+  });
+
+  it('filters "function too long" suggestions', () => {
+    const findings: Finding[] = [
+      makeFinding({
+        file: 'a.ts',
+        line: 1,
+        severity: 'low',
+        category: 'quality',
+        message: 'Function is too long, consider splitting it',
+        confidence: 0.7,
+        source: 'ai',
+      }),
+    ];
+    const filtered = filterFalsePositives(findings);
+    expect(filtered.length).toBe(0); // 被过滤
+  });
+
+  it('long function rule 不误过滤高置信度真问题', () => {
+    const findings: Finding[] = [
+      makeFinding({
+        file: 'a.ts',
+        line: 1,
+        severity: 'medium',
+        category: 'performance',
+        message: 'Function too long causing performance degradation',
+        confidence: 0.9,
+        source: 'rule',
+      }),
+    ];
+    const filtered = filterFalsePositives(findings);
+    expect(filtered.length).toBe(1); // 保留
+  });
+
+  it('BUILTIN_FP_RULES has 17 rules', () => {
+    expect(BUILTIN_FP_RULES.length).toBe(17);
+  });
+});
+
+// ==================== computeTextOverlap with LCS algorithm (Task 19) ====================
+describe('computeTextOverlap with LCS algorithm', () => {
+  it('returns 1 for identical strings', () => {
+    expect(computeTextOverlap('hello world', 'hello world')).toBe(1);
+  });
+
+  it('returns 0 for completely different strings', () => {
+    expect(computeTextOverlap('abc', 'xyz')).toBe(0);
+  });
+
+  it('returns ~0.5 for partial overlap (word reordering)', () => {
+    // "hello world" vs "world hello" 有 100% 词重叠但顺序不同
+    // LCS（按词）= 1（"hello" 或 "world"），所以相似度约 0.5
+    const overlap = computeTextOverlap('hello world', 'world hello');
+    expect(overlap).toBeGreaterThan(0.3);
+    expect(overlap).toBeLessThan(0.7);
+  });
+
+  it('returns proportional overlap for partial match', () => {
+    // "hello world foo" vs "hello bar" 共享 "hello"
+    const overlap = computeTextOverlap('hello world foo', 'hello bar');
+    expect(overlap).toBeGreaterThan(0.1);
+    expect(overlap).toBeLessThan(0.5);
+  });
+
+  it('handles empty strings', () => {
+    expect(computeTextOverlap('', '')).toBe(0);
+    expect(computeTextOverlap('hello', '')).toBe(0);
+    expect(computeTextOverlap('', 'hello')).toBe(0);
+  });
+
+  it('handles case insensitive by default', () => {
+    // 当前实现在比较前 toLowerCase，所以大小写不敏感
+    const overlap = computeTextOverlap('Hello World', 'hello world');
+    expect(overlap).toBeGreaterThanOrEqual(0.5);
+  });
+
+  it('substring 包含场景仍返回高重叠（向后兼容）', () => {
+    // finding message 是 comment body 的子串时，LCS 覆盖整个较短序列
+    const overlap = computeTextOverlap(
+      'XSS vulnerability in user input handling',
+      'Found: XSS vulnerability in user input handling via innerHTML',
+    );
+    expect(overlap).toBeGreaterThan(0.5);
+  });
+
+  it('完全不同词集合返回 0', () => {
+    expect(computeTextOverlap('alpha beta', 'gamma delta')).toBe(0);
   });
 });

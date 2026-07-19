@@ -1,6 +1,7 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Rule, RuleAnnotation, RulePattern, FileBundle, FileDiff } from './types.js';
+import { parseMinimalYaml } from './yaml-lite.js';
 
 // ── 最小 YAML 行内解析器 ──
 
@@ -19,92 +20,6 @@ interface YamlRulePattern {
   items?: string[] | string;
   threshold?: number;
   message?: string;
-}
-
-function parseMinimalYaml(text: string): YamlRule[] {
-  const rules: YamlRule[] = [];
-  let current: YamlRule | null = null;
-  let currentPattern: YamlRulePattern | null = null;
-  let inPatterns = false;
-
-  const lines = text.split('\n');
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-
-    const indent = line.length - line.trimStart().length;
-
-    // Top-level rule (no indent)
-    if (indent === 0 && trimmed.startsWith('- id:')) {
-      if (current) {
-        rules.push(current);
-      }
-      current = { patterns: [] };
-      inPatterns = false;
-      currentPattern = null;
-      // Extract id from this line
-      const idMatch = trimmed.match(/^- id:\s*(.+)$/);
-      if (idMatch) {
-        current.id = idMatch[1].trim().replace(/^["']|["']$/g, '');
-      }
-      continue;
-    }
-
-    if (!current) continue;
-
-    // Parse fields at indent 2
-    if (indent === 2) {
-      if (trimmed.startsWith('id:')) {
-        current.id = trimmed.slice(3).trim().replace(/^["']|["']$/g, '');
-      } else if (trimmed.startsWith('name:')) {
-        current.name = trimmed.slice(5).trim().replace(/^["']|["']$/g, '');
-      } else if (trimmed.startsWith('severity:')) {
-        current.severity = trimmed.slice(9).trim();
-      } else if (trimmed.startsWith('category:')) {
-        current.category = trimmed.slice(9).trim();
-      } else if (trimmed.startsWith('language:')) {
-        const val = trimmed.slice(9).trim();
-        if (val.startsWith('[') && val.endsWith(']')) {
-          current.language = val.slice(1, -1).split(',').map((s) => s.trim().replace(/^["']|["']$/g, ''));
-        } else {
-          current.language = [val.replace(/^["']|["']$/g, '')];
-        }
-      } else if (trimmed === 'patterns:') {
-        inPatterns = true;
-      }
-    }
-
-    if (inPatterns && indent === 4 && trimmed.startsWith('- type:')) {
-      currentPattern = {};
-      // Extract type from this line
-      const typeMatch = trimmed.match(/^- type:\s*(.+)$/);
-      if (typeMatch) {
-        currentPattern.type = typeMatch[1].trim();
-      }
-      current.patterns!.push(currentPattern);
-      continue;
-    }
-
-    if (currentPattern && indent === 6) {
-      if (trimmed.startsWith('type:')) {
-        currentPattern.type = trimmed.slice(5).trim();
-      } else if (trimmed.startsWith('pattern:')) {
-        currentPattern.pattern = trimmed.slice(8).trim().replace(/^["']|["']$/g, '');
-      } else if (trimmed.startsWith('message:')) {
-        currentPattern.message = trimmed.slice(8).trim().replace(/^["']|["']$/g, '');
-      } else if (trimmed.startsWith('threshold:')) {
-        currentPattern.threshold = parseInt(trimmed.slice(10).trim(), 10);
-      } else if (trimmed.startsWith('items:')) {
-        const val = trimmed.slice(6).trim();
-        if (val.startsWith('[') && val.endsWith(']')) {
-          currentPattern.items = val.slice(1, -1).split(',').map((s) => s.trim().replace(/^["']|["']$/g, ''));
-        }
-      }
-    }
-  }
-
-  if (current) rules.push(current);
-  return rules;
 }
 
 function yamlToRules(yamlRules: YamlRule[]): Rule[] {
@@ -139,7 +54,7 @@ export async function loadRules(ruleDir: string): Promise<Rule[]> {
     const ext = filePath.endsWith('.yaml') || filePath.endsWith('.yml') ? 'yaml' : 'json';
 
     if (ext === 'yaml') {
-      const yamlRules = parseMinimalYaml(content);
+      const yamlRules = (parseMinimalYaml(content).rules ?? []) as YamlRule[];
       const rules = yamlToRules(yamlRules);
       allRules.push(...rules);
     } else {

@@ -45,10 +45,13 @@ export function validateFinding(f: Partial<Finding>): string[] {
 
 /**
  * 验证 PipelineConfig 的完整性。
- * 返回错误消息数组，空数组表示验证通过。
+ * 返回 { errors, warnings }：
+ *   - errors：阻塞性问题，空数组表示校验通过
+ *   - warnings：非阻塞警告（如 mcpEnabled=true 但未配置 mcpEndpoint）
  */
-export function validatePipelineConfig(config: Partial<PipelineConfig>): string[] {
+export function validatePipelineConfigWithWarnings(config: Partial<PipelineConfig>): { errors: string[]; warnings: string[] } {
   const errors: string[] = [];
+  const warnings: string[] = [];
 
   if (!config.filter) {
     errors.push('filter is required');
@@ -69,8 +72,17 @@ export function validatePipelineConfig(config: Partial<PipelineConfig>): string[
   }
 
   if (config.mcpEnabled && !config.mcpEndpoint) {
-    // warning level: not an error, but worth noting
+    warnings.push('mcpEnabled is true but mcpEndpoint is not configured');
   }
 
-  return errors;
+  return { errors, warnings };
+}
+
+/**
+ * 验证 PipelineConfig 的完整性。
+ * 返回错误消息数组，空数组表示验证通过。
+ * 保持向后兼容：仅返回 errors，如需 warnings 请使用 validatePipelineConfigWithWarnings。
+ */
+export function validatePipelineConfig(config: Partial<PipelineConfig>): string[] {
+  return validatePipelineConfigWithWarnings(config).errors;
 }

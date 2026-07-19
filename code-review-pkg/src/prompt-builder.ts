@@ -1,5 +1,6 @@
 import type { PipelineContext, FileDiff } from './types.js';
 import { compressContext, type CompressionOptions } from './token-optimizer.js';
+import { countTokens } from './token-counter.js';
 
 // ── 默认模板 ──
 
@@ -419,10 +420,13 @@ export function getOWASPTop10List(): string {
 // ── Round 60: token 预估 ──
 
 /**
- * 简单的 token 数量预估（字符数 / 4）。
+ * Token 数量预估（基于 GPT tokenizer 启发式，CJK 感知）。
+ *
+ * 委托给 `countTokens`，对中文/日文/韩文等宽字符显著比字符数/4 更准确，
+ * 对纯 ASCII 文本结果与 `Math.ceil(len / 4)` 一致（向后兼容）。
  */
 export function estimatePromptTokens(prompt: string): number {
-  return Math.ceil(prompt.length / 4);
+  return countTokens(prompt);
 }
 
 // ── Round 70: max token 限制 ──

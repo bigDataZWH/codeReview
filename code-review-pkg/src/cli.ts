@@ -3,12 +3,70 @@ import { runPipeline, runSecurityPipeline } from './pipeline.js';
 import { buildImpactPrompt, buildScanPrompt } from './prompt-builder.js';
 import { publishReview } from './comment-publisher.js';
 import { generateConfig } from './init-wizard.js';
+import { callLLM } from './ai-reflection.js';
+import type { LLMProviderConfig } from './types.js';
 import { readFileSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { stdin } from 'node:process';
 
 const args = process.argv.slice(2);
 const command = args[0];
+
+/**
+ * 解析 --execute / --llm-config 标志。
+ * 当 --execute 提供时调用 callLLM 并输出 findings JSON，否则仅输出 prompt。
+ *
+ * 错误处理：
+ * - 缺少 --llm-config：输出错误信息并退出 1
+ * - --llm-config 不是合法 JSON：输出错误信息并退出 1
+ * - LLM 调用失败：输出错误信息并退出 1
+ */
+async function outputReviewResult(prompt: string): Promise<void> {
+  const subArgs = process.argv.slice(3);
+  const executeFlag = subArgs.includes('--execute');
+  const llmConfigIndex = subArgs.indexOf('--llm-config');
+  const llmConfigStr =
+    llmConfigIndex >= 0 && llmConfigIndex + 1 < subArgs.length
+      ? subArgs[llmConfigIndex + 1]
+      : null;
+
+  if (!executeFlag) {
+    // 向后兼容：仅输出 prompt
+    console.log(prompt);
+    return;
+  }
+
+  if (!llmConfigStr) {
+    console.error('Error: LLM config required when --execute is used (provide --llm-config)');
+    process.exit(1);
+  }
+
+  let llmConfig: LLMProviderConfig;
+  try {
+    llmConfig = JSON.parse(llmConfigStr) as LLMProviderConfig;
+  } catch (err) {
+    console.error('Error: --llm-config must be valid JSON');
+    process.exit(1);
+  }
+
+  try {
+    const llmResponse = await callLLM(prompt, llmConfig);
+    // 解析 LLM 响应为 findings 数组
+    let findings: unknown;
+    try {
+      findings = JSON.parse(llmResponse);
+    } catch (err) {
+      // LLM 返回非 JSON 文本：直接输出原始响应
+      console.log(llmResponse);
+      return;
+    }
+    console.log(JSON.stringify(findings, null, 2));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('LLM call failed:', message);
+    process.exit(1);
+  }
+}
 
 if (command === 'parse') {
   const diffText = readFileSync(0, 'utf-8'); // stdin
@@ -18,11 +76,11 @@ if (command === 'parse') {
   const diffText = readFileSync(0, 'utf-8');
   // 简化调用
   const result = await runPipeline(diffText, { filter: {} });
-  console.log(result.prompt);
+  await outputReviewResult(result.prompt);
 } else if (command === 'security-review') {
   const diffText = readFileSync(0, 'utf-8');
   const result = await runSecurityPipeline(diffText, { filter: {} });
-  console.log(result.prompt);
+  await outputReviewResult(result.prompt);
 } else if (command === 'scan') {
   const diffText = readFileSync(0, 'utf-8');
   const result = await runPipeline(diffText, { filter: {} });
@@ -32,7 +90,7 @@ if (command === 'parse') {
     annotatedBundles: result.annotatedBundles,
     context: result.context,
   });
-  console.log(scanPrompt);
+  await outputReviewResult(scanPrompt);
 } else if (command === 'impact') {
   const diffText = readFileSync(0, 'utf-8');
   const result = await runPipeline(diffText, { filter: {} });
@@ -42,7 +100,7 @@ if (command === 'parse') {
     annotatedBundles: result.annotatedBundles,
     context: result.context,
   });
-  console.log(impactPrompt);
+  await outputReviewResult(impactPrompt);
 } else if (command === 'publish') {
   const publishArgs = args.slice(1);
   const getArg = (flag: string): string | undefined => {
@@ -173,5 +231,10 @@ Usage:
   code-review security-review  < diff.txt    Run security review pipeline
   code-review scan             < diff.txt    Run full scan pipeline
   code-review impact           < diff.txt    Run impact analysis pipeline
-  code-review publish --owner <owner> --repo <repo> --pr <pr-number> --file <results.json> [--token <token>] [--mode replace|incremental]`);
+  code-review publish --owner <owner> --repo <repo> --pr <pr-number> --file <results.json> [--token <token>] [--mode replace|incremental]
+
+  The review/security-review/scan/impact commands accept:
+    --execute                 Call LLM to complete end-to-end review
+    --llm-config '<json>'     JSON string with LLM provider config (required with --execute)
+                              Example: '{"provider":"openai","apiKey":"KEY","model":"gpt-4"}'`);
 }

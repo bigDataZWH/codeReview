@@ -129,8 +129,9 @@ class MCPClient {
           pending.resolve(msg.result);
         }
       }
-    } catch {
+    } catch (err) {
       // Ignore invalid JSON lines
+      console.warn('[mcp-adapter] handleMessage failed to parse JSON line:', err);
     }
   }
 
@@ -168,8 +169,9 @@ export async function getReviewContext(
         riskScore: typeof r.riskScore === 'number' ? r.riskScore : 0,
       };
     }
-  } catch {
+  } catch (err) {
     // Fallback on any error
+    console.warn('[mcp-adapter] getReviewContext failed, falling back to basic context:', err);
   }
   return fallbackContext(filePaths);
 }
@@ -186,8 +188,9 @@ export async function getImpactRadius(filePaths: string[]): Promise<BlastRadiusI
     if (Array.isArray(result)) {
       return mapBlastRadius(result);
     }
-  } catch {
+  } catch (err) {
     // Fallback on any error
+    console.warn('[mcp-adapter] getImpactRadius failed, returning empty:', err);
   }
   return [];
 }
@@ -197,7 +200,8 @@ export function isMCPAvailable(): boolean {
   try {
     const result = spawnSync('which', ['code-review-graph'], { stdio: 'pipe' });
     mcpAvailableCache = result.status === 0;
-  } catch {
+  } catch (err) {
+    console.warn('[mcp-adapter] isMCPAvailable spawnSync failed, treating MCP as unavailable:', err);
     mcpAvailableCache = false;
   }
   return mcpAvailableCache;

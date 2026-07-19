@@ -107,7 +107,8 @@ export function parseReflectionResponse(response: string, index?: number): numbe
     }
 
     return 0.5;
-  } catch {
+  } catch (err) {
+    console.warn('[ai-reflection] parseReflectionResponse failed to parse JSON:', err);
     return 0.5;
   }
 }
@@ -304,8 +305,9 @@ export async function reflectFindings(
       const confidence = parseReflectionResponse(responseText, index);
       return confidence >= threshold;
     });
-  } catch {
+  } catch (err) {
     // 降级策略：LLM 不可用时保留所有 finding（宁可误报也不漏报）
+    console.warn('[ai-reflection] reflectFindings LLM call failed, returning all findings:', err);
     return [...findings];
   }
 }

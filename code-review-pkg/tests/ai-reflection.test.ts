@@ -99,9 +99,21 @@ describe('parseReflectionResponse', () => {
   });
 
   it('无效 JSON — 返回默认值 0.5', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const response = 'this is not json';
     const result = parseReflectionResponse(response);
     expect(result).toBe(0.5);
+    warnSpy.mockRestore();
+  });
+
+  it('无效 JSON 时记录 warn 日志（含 [ai-reflection] 前缀）', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = parseReflectionResponse('this is not json');
+    expect(result).toBe(0.5);
+    expect(warnSpy).toHaveBeenCalled();
+    const allCalls = warnSpy.mock.calls.map((c) => String(c[0]));
+    expect(allCalls.some((s) => s.includes('[ai-reflection]'))).toBe(true);
+    warnSpy.mockRestore();
   });
 
   it('confidence 超出范围 — clamp 到 [0, 1]', () => {
@@ -245,6 +257,7 @@ describe('reflectFindings', () => {
   });
 
   it('LLM 不可用 — fetch 抛错时，所有 finding 保留（降级策略）', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const findings: Finding[] = [
       makeFinding({ file: 'src/app.ts', line: 10, message: 'issue 1' }),
       makeFinding({ file: 'src/b.ts', line: 20, message: 'issue 2' }),
@@ -260,6 +273,24 @@ describe('reflectFindings', () => {
     expect(result).toHaveLength(2);
     expect(result[0].file).toBe('src/app.ts');
     expect(result[1].file).toBe('src/b.ts');
+    warnSpy.mockRestore();
+  });
+
+  it('LLM 不可用时记录 warn 日志（含 [ai-reflection] 前缀）', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const findings: Finding[] = [
+      makeFinding({ file: 'src/app.ts', line: 10, message: 'issue 1' }),
+    ];
+
+    const mockFetch = vi.fn().mockRejectedValue(new Error('Network error'));
+    globalThis.fetch = mockFetch;
+
+    await reflectFindings(findings, mockConfig, 0.5);
+
+    expect(warnSpy).toHaveBeenCalled();
+    const allCalls = warnSpy.mock.calls.map((c) => String(c[0]));
+    expect(allCalls.some((s) => s.includes('[ai-reflection]'))).toBe(true);
+    warnSpy.mockRestore();
   });
 
   it('模型未配置 — config 为空对象时，所有 finding 保留且不调用 fetch', async () => {

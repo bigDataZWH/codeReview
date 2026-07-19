@@ -2,7 +2,7 @@
 // 迭代 7：误报过滤优化测试
 // 验证新增的硬规则、可配置反思阈值、severity-based filtering 和组合过滤策略
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   filterFalsePositives,
   BUILTIN_FP_RULES,
@@ -304,6 +304,7 @@ describe('迭代 7：反思阈值可配置', () => {
   });
 
   it('reflectFindings 默认使用 0.6 阈值', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     // LLM 不可用时应降级保留所有 findings
     const findings: Finding[] = [
       makeFinding({ confidence: 0.3 }),
@@ -317,9 +318,11 @@ describe('迭代 7：反思阈值可配置', () => {
     }).catch(() => findings);
     // 降级时保留所有
     expect(result.length).toBe(2);
+    warnSpy.mockRestore();
   });
 
   it('reflectFindings 接受自定义阈值', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const findings: Finding[] = [
       makeFinding({ confidence: 0.3 }),
       makeFinding({ confidence: 0.9 }),
@@ -336,6 +339,7 @@ describe('迭代 7：反思阈值可配置', () => {
     ).catch(() => findings);
     // 降级时保留所有（LLM 不可用）
     expect(result.length).toBe(2);
+    warnSpy.mockRestore();
   });
 });
 

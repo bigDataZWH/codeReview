@@ -14,7 +14,7 @@ import {
   type DagContext,
 } from '../src/orchestrator.js';
 import { StateStore } from '../src/state.js';
-import type { Finding, FileDiff, MCPContextResult } from '../src/types.js';
+import type { Finding, FileDiff, MCPContextResult, Rule, LLMProviderConfig, BlastRadiusItem } from '../src/types.js';
 
 /** 构造一条测试 finding */
 function makeFinding(partial: Partial<Finding> = {}): Finding {
@@ -957,6 +957,7 @@ describe('getReviewContextWithFallback MCP 降级', () => {
   });
 
   it('MCP 不可用时降级为全文上下文', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const result = await getReviewContextWithFallback({
       mcpOperation: async () => { throw new Error('MCP unavailable'); },
       diffs: [makeFileDiff('a.ts'), makeFileDiff('b.ts')],
@@ -964,24 +965,42 @@ describe('getReviewContextWithFallback MCP 降级', () => {
     expect(result.fallbackUsed).toBe(true);
     expect(result.context).toBeNull();
     expect(result.fullTextFiles).toEqual(['a.ts', 'b.ts']);
+    warnSpy.mockRestore();
   });
 
   it('MCP 抛出非 Error 对象时也降级', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const result = await getReviewContextWithFallback({
       mcpOperation: async () => { throw 'crash'; },
       diffs: [makeFileDiff('a.ts')],
     });
     expect(result.fallbackUsed).toBe(true);
     expect(result.context).toBeNull();
+    warnSpy.mockRestore();
   });
 
   it('无 diffs 时 fullTextFiles 为空数组', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const result = await getReviewContextWithFallback({
       mcpOperation: async () => { throw new Error('down'); },
       diffs: [],
     });
     expect(result.fallbackUsed).toBe(true);
     expect(result.fullTextFiles).toEqual([]);
+    warnSpy.mockRestore();
+  });
+
+  it('MCP 降级时记录 warn 日志（含 [orchestrator] 前缀）', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = await getReviewContextWithFallback({
+      mcpOperation: async () => { throw new Error('MCP unavailable'); },
+      diffs: [makeFileDiff('a.ts')],
+    });
+    expect(result.fallbackUsed).toBe(true);
+    expect(warnSpy).toHaveBeenCalled();
+    const allCalls = warnSpy.mock.calls.map((c) => String(c[0]));
+    expect(allCalls.some((s) => s.includes('[orchestrator]'))).toBe(true);
+    warnSpy.mockRestore();
   });
 });
 
@@ -1052,5 +1071,380 @@ describe('callModelWithTimeout 模型超时降级', () => {
         operation: async () => { throw 'string error'; },
       }),
     ).rejects.toThrow('string error');
+  });
+});
+
+// ============================================================
+// buildReviewDag with real handlers — Task 8
+// ============================================================
+describe('buildReviewDag with real handlers', () => {
+  /** 构造含 console.log 的 FileDiff */
+  function makeConsoleLogDiff(path: string): FileDiff {
+    return {
+      path,
+      status: 'modified',
+      language: 'typescript',
+      hunks: [
+        {
+          oldStart: 1,
+          oldCount: 0,
+          newStart: 1,
+          newCount: 1,
+          header: '@@ -1 +1 @@',
+          lines: [
+            { type: 'add', content: '+console.log("debug")', newLineNumber: 1 },
+          ],
+        },
+      ],
+    };
+  }
+
+  /** no-console 规则 */
+  function makeNoConsoleRule(): Rule {
+    return {
+      id: 'no-console',
+      name: 'No console.log',
+      severity: 'low',
+      category: 'style',
+      patterns: [
+        { type: 'regex', pattern: 'console\\.log', message: 'Avoid console.log in production code' },
+      ],
+    };
+  }
+
+  // ---------- SubTask 8.1: rule-engine ----------
+  describe('rule-engine handler', () => {
+    it('调用 matchRules 并返回 source=rule 的 findings', async () => {
+      const diffs = [makeConsoleLogDiff('src/app.ts')];
+      const rules = [makeNoConsoleRule()];
+
+      const nodes = buildReviewDag(diffs, {
+        rules,
+        includeAIReviewer: false,
+        includeImpactAnalyzer: false,
+      });
+
+      const ruleNode = nodes.find((n) => n.id === 'rule-engine');
+      expect(ruleNode).toBeDefined();
+
+      const findings = await ruleNode!.handler({ diffs, previousResults: new Map() });
+
+      expect(findings.length).toBeGreaterThan(0);
+      expect(findings.every((f) => f.source === 'rule')).toBe(true);
+      expect(findings[0].ruleId).toBe('no-console');
+      expect(findings[0].file).toBe('src/app.ts');
+      expect(findings[0].line).toBe(1);
+    });
+
+    it('未提供 rules 时返回空数组（向后兼容）', async () => {
+      const diffs = [makeConsoleLogDiff('src/app.ts')];
+      const nodes = buildReviewDag(diffs, {
+        includeAIReviewer: false,
+        includeImpactAnalyzer: false,
+      });
+      const ruleNode = nodes.find((n) => n.id === 'rule-engine');
+      const findings = await ruleNode!.handler({ diffs, previousResults: new Map() });
+      expect(findings).toEqual([]);
+    });
+
+    it('支持注入 mock matchRulesFn', async () => {
+      const diffs = [makeConsoleLogDiff('src/app.ts')];
+      const mockFn = vi.fn(
+        (_bundle: unknown, _rules: unknown) => [
+          {
+            ruleId: 'mock-rule',
+            ruleName: 'Mock',
+            severity: 'high',
+            message: 'mock finding',
+            line: 5,
+            category: 'mock',
+          },
+        ],
+      );
+      const nodes = buildReviewDag(diffs, {
+        rules: [makeNoConsoleRule()],
+        matchRulesFn: mockFn as never,
+        includeAIReviewer: false,
+        includeImpactAnalyzer: false,
+      });
+      const ruleNode = nodes.find((n) => n.id === 'rule-engine');
+      const findings = await ruleNode!.handler({ diffs, previousResults: new Map() });
+
+      expect(mockFn).toHaveBeenCalled();
+      expect(findings.length).toBe(1);
+      expect(findings[0].source).toBe('rule');
+      expect(findings[0].ruleId).toBe('mock-rule');
+      expect(findings[0].line).toBe(5);
+    });
+
+    it('使用闭包 diffs 当 ctx.diffs 为空时', async () => {
+      const diffs = [makeConsoleLogDiff('src/closure.ts')];
+      const rules = [makeNoConsoleRule()];
+      const nodes = buildReviewDag(diffs, {
+        rules,
+        includeAIReviewer: false,
+        includeImpactAnalyzer: false,
+      });
+      const ruleNode = nodes.find((n) => n.id === 'rule-engine');
+      // ctx.diffs 为空，应回退到闭包 diffs
+      const findings = await ruleNode!.handler({ diffs: [], previousResults: new Map() });
+      expect(findings.length).toBe(1);
+      expect(findings[0].file).toBe('src/closure.ts');
+    });
+  });
+
+  // ---------- SubTask 8.2: ai-reviewer ----------
+  describe('ai-reviewer handler', () => {
+    it('配置 LLM 时调用 callLLMFn 返回 source=ai 的 findings', async () => {
+      const llmResponse = JSON.stringify([
+        { file: 'src/app.ts', line: 10, severity: 'high', category: 'security', message: 'SQL injection' },
+        { file: 'src/app.ts', line: 20, severity: 'medium', category: 'style', message: 'Long function' },
+      ]);
+      const callLLMFn = vi.fn().mockResolvedValue(llmResponse);
+      const llmConfig: LLMProviderConfig = {
+        provider: 'openai',
+        apiKey: 'test-key',
+        model: 'gpt-4',
+      };
+
+      const nodes = buildReviewDag([makeFileDiff('src/app.ts')], {
+        llmConfig,
+        reviewPrompt: 'Review this code',
+        callLLMFn,
+        includeAIReviewer: true,
+        includeImpactAnalyzer: false,
+      });
+
+      const aiNode = nodes.find((n) => n.id === 'ai-reviewer');
+      expect(aiNode).toBeDefined();
+
+      const findings = await aiNode!.handler({ diffs: [], previousResults: new Map() });
+
+      expect(callLLMFn).toHaveBeenCalledWith('Review this code', llmConfig);
+      expect(findings.length).toBe(2);
+      expect(findings.every((f) => f.source === 'ai')).toBe(true);
+      expect(findings[0].file).toBe('src/app.ts');
+      expect(findings[0].line).toBe(10);
+      expect(findings[1].line).toBe(20);
+    });
+
+    it('未配置 llmConfig 时返回空数组', async () => {
+      const callLLMFn = vi.fn();
+      const nodes = buildReviewDag([makeFileDiff('src/app.ts')], {
+        reviewPrompt: 'Review this code',
+        callLLMFn,
+        includeAIReviewer: true,
+        includeImpactAnalyzer: false,
+      });
+      const aiNode = nodes.find((n) => n.id === 'ai-reviewer');
+      const findings = await aiNode!.handler({ diffs: [], previousResults: new Map() });
+      expect(findings).toEqual([]);
+      expect(callLLMFn).not.toHaveBeenCalled();
+    });
+
+    it('未提供 reviewPrompt 时返回空数组', async () => {
+      const callLLMFn = vi.fn();
+      const nodes = buildReviewDag([makeFileDiff('src/app.ts')], {
+        llmConfig: { provider: 'openai', apiKey: 'k', model: 'm' },
+        callLLMFn,
+        includeAIReviewer: true,
+        includeImpactAnalyzer: false,
+      });
+      const aiNode = nodes.find((n) => n.id === 'ai-reviewer');
+      const findings = await aiNode!.handler({ diffs: [], previousResults: new Map() });
+      expect(findings).toEqual([]);
+      expect(callLLMFn).not.toHaveBeenCalled();
+    });
+
+    it('LLM 调用失败时降级返回空数组（不抛错）', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const callLLMFn = vi.fn().mockRejectedValue(new Error('LLM down'));
+      const llmConfig: LLMProviderConfig = {
+        provider: 'openai',
+        apiKey: 'test-key',
+        model: 'gpt-4',
+      };
+      const nodes = buildReviewDag([makeFileDiff('src/app.ts')], {
+        llmConfig,
+        reviewPrompt: 'Review this code',
+        callLLMFn,
+        includeAIReviewer: true,
+        includeImpactAnalyzer: false,
+      });
+      const aiNode = nodes.find((n) => n.id === 'ai-reviewer');
+      const findings = await aiNode!.handler({ diffs: [], previousResults: new Map() });
+      expect(findings).toEqual([]);
+      warnSpy.mockRestore();
+    });
+
+    it('LLM 返回非 JSON 时返回空数组', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const callLLMFn = vi.fn().mockResolvedValue('not a json');
+      const nodes = buildReviewDag([makeFileDiff('src/app.ts')], {
+        llmConfig: { provider: 'openai', apiKey: 'k', model: 'm' },
+        reviewPrompt: 'Review',
+        callLLMFn,
+        includeAIReviewer: true,
+        includeImpactAnalyzer: false,
+      });
+      const aiNode = nodes.find((n) => n.id === 'ai-reviewer');
+      const findings = await aiNode!.handler({ diffs: [], previousResults: new Map() });
+      expect(findings).toEqual([]);
+      warnSpy.mockRestore();
+    });
+
+    it('LLM 返回非 JSON 时记录 warn 日志（含 [orchestrator] 前缀）', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const callLLMFn = vi.fn().mockResolvedValue('not a json');
+      const nodes = buildReviewDag([makeFileDiff('src/app.ts')], {
+        llmConfig: { provider: 'openai', apiKey: 'k', model: 'm' },
+        reviewPrompt: 'Review',
+        callLLMFn,
+        includeAIReviewer: true,
+        includeImpactAnalyzer: false,
+      });
+      const aiNode = nodes.find((n) => n.id === 'ai-reviewer');
+      await aiNode!.handler({ diffs: [], previousResults: new Map() });
+      expect(warnSpy).toHaveBeenCalled();
+      const allCalls = warnSpy.mock.calls.map((c) => String(c[0]));
+      expect(allCalls.some((s) => s.includes('[orchestrator]'))).toBe(true);
+      warnSpy.mockRestore();
+    });
+
+    it('LLM 返回 markdown 代码块包裹的 JSON 时正确解析', async () => {
+      const llmResponse = '```json\n' + JSON.stringify([
+        { file: 'src/a.ts', line: 1, severity: 'low', category: 'style', message: 'bad' },
+      ]) + '\n```';
+      const callLLMFn = vi.fn().mockResolvedValue(llmResponse);
+      const nodes = buildReviewDag([makeFileDiff('src/a.ts')], {
+        llmConfig: { provider: 'openai', apiKey: 'k', model: 'm' },
+        reviewPrompt: 'Review',
+        callLLMFn,
+        includeAIReviewer: true,
+        includeImpactAnalyzer: false,
+      });
+      const aiNode = nodes.find((n) => n.id === 'ai-reviewer');
+      const findings = await aiNode!.handler({ diffs: [], previousResults: new Map() });
+      expect(findings.length).toBe(1);
+      expect(findings[0].source).toBe('ai');
+      expect(findings[0].file).toBe('src/a.ts');
+    });
+  });
+
+  // ---------- SubTask 8.3: impact-analyzer ----------
+  describe('impact-analyzer handler', () => {
+    it('调用 getImpactRadiusFn 返回 findings', async () => {
+      const mockItems: BlastRadiusItem[] = [
+        { path: 'src/foo.ts', type: 'caller', relation: 'calls bar()' },
+        { path: 'src/bar.ts', type: 'callee', relation: 'called by foo()' },
+        { path: 'tests/foo.test.ts', type: 'test', relation: 'tests foo()' },
+      ];
+      const getImpactRadiusFn = vi.fn().mockResolvedValue(mockItems);
+      const diffs = [makeFileDiff('src/foo.ts'), makeFileDiff('src/bar.ts')];
+
+      const nodes = buildReviewDag(diffs, {
+        getImpactRadiusFn,
+        includeAIReviewer: false,
+        includeImpactAnalyzer: true,
+      });
+
+      const impactNode = nodes.find((n) => n.id === 'impact-analyzer');
+      expect(impactNode).toBeDefined();
+
+      const findings = await impactNode!.handler({ diffs: [], previousResults: new Map() });
+
+      expect(getImpactRadiusFn).toHaveBeenCalledWith(['src/foo.ts', 'src/bar.ts']);
+      expect(findings.length).toBe(3);
+      expect(findings.every((f) => f.source === 'rule')).toBe(true);
+      expect(findings.every((f) => f.category === 'impact')).toBe(true);
+      const files = findings.map((f) => f.file);
+      expect(files).toContain('src/foo.ts');
+      expect(files).toContain('src/bar.ts');
+      expect(files).toContain('tests/foo.test.ts');
+    });
+
+    it('getImpactRadiusFn 失败时降级返回空数组', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const getImpactRadiusFn = vi.fn().mockRejectedValue(new Error('MCP down'));
+      const nodes = buildReviewDag([makeFileDiff('src/foo.ts')], {
+        getImpactRadiusFn,
+        includeAIReviewer: false,
+        includeImpactAnalyzer: true,
+      });
+      const impactNode = nodes.find((n) => n.id === 'impact-analyzer');
+      const findings = await impactNode!.handler({ diffs: [], previousResults: new Map() });
+      expect(findings).toEqual([]);
+      warnSpy.mockRestore();
+    });
+
+    it('getImpactRadiusFn 返回空数组时返回空 findings', async () => {
+      const getImpactRadiusFn = vi.fn().mockResolvedValue([]);
+      const nodes = buildReviewDag([makeFileDiff('src/foo.ts')], {
+        getImpactRadiusFn,
+        includeAIReviewer: false,
+        includeImpactAnalyzer: true,
+      });
+      const impactNode = nodes.find((n) => n.id === 'impact-analyzer');
+      const findings = await impactNode!.handler({ diffs: [], previousResults: new Map() });
+      expect(findings).toEqual([]);
+    });
+  });
+
+  // ---------- 集成：通过 executeDag 执行 ----------
+  describe('通过 executeDag 集成执行', () => {
+    it('完整 DAG 执行：rule-engine + ai-reviewer + impact-analyzer', async () => {
+      const diffs = [makeConsoleLogDiff('src/app.ts')];
+      const rules = [makeNoConsoleRule()];
+      const llmResponse = JSON.stringify([
+        { file: 'src/app.ts', line: 1, severity: 'medium', category: 'ai', message: 'AI finding' },
+      ]);
+      const callLLMFn = vi.fn().mockResolvedValue(llmResponse);
+      const mockImpactItems: BlastRadiusItem[] = [
+        { path: 'src/dep.ts', type: 'callee', relation: 'called by app' },
+      ];
+      const getImpactRadiusFn = vi.fn().mockResolvedValue(mockImpactItems);
+
+      const nodes = buildReviewDag(diffs, {
+        rules,
+        llmConfig: { provider: 'openai', apiKey: 'k', model: 'm' },
+        reviewPrompt: 'Review',
+        callLLMFn,
+        getImpactRadiusFn,
+        includeAIReviewer: true,
+        includeImpactAnalyzer: true,
+      });
+
+      const context: DagContext = { diffs, previousResults: new Map() };
+      const result = await executeDag(nodes, context);
+
+      expect(result.errors.size).toBe(0);
+      expect(result.results.size).toBe(3);
+
+      const ruleFindings = result.results.get('rule-engine') as Finding[];
+      expect(ruleFindings.length).toBeGreaterThan(0);
+      expect(ruleFindings.every((f) => f.source === 'rule')).toBe(true);
+
+      const aiFindings = result.results.get('ai-reviewer') as Finding[];
+      expect(aiFindings.length).toBe(1);
+      expect(aiFindings[0].source).toBe('ai');
+
+      const impactFindings = result.results.get('impact-analyzer') as Finding[];
+      expect(impactFindings.length).toBe(1);
+      expect(impactFindings[0].file).toBe('src/dep.ts');
+    });
+
+    it('默认配置（无 options）DAG 仍可执行且无错误', async () => {
+      const diffs = [makeConsoleLogDiff('src/app.ts')];
+      const nodes = buildReviewDag(diffs, {
+        includeAIReviewer: false,
+        includeImpactAnalyzer: false,
+      });
+      const context: DagContext = { diffs, previousResults: new Map() };
+      const result = await executeDag(nodes, context);
+      expect(result.errors.size).toBe(0);
+      expect(result.results.size).toBe(1);
+      // 无 rules 配置，rule-engine 返回空数组
+      expect(result.results.get('rule-engine')).toEqual([]);
+    });
   });
 });

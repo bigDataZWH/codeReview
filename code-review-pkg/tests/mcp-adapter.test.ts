@@ -233,6 +233,7 @@ describe('MCPClient', () => {
   });
 
   it('MCP Server 返回错误时正确处理', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     mockedSpawnSync.mockReturnValue({ status: 0 } as any);
     const { mockProc } = createMockChildProcess();
     mockedSpawn.mockReturnValue(mockProc as any);
@@ -256,10 +257,12 @@ describe('MCPClient', () => {
     expect(result.codeSnippets).toEqual({});
     expect(result.blastRadius).toEqual([]);
     expect(result.riskScore).toBe(0);
+    warnSpy.mockRestore();
   });
 
   it('请求超时时 reject 并降级', async () => {
     vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     mockedSpawnSync.mockReturnValue({ status: 0 } as any);
     const { mockProc } = createMockChildProcess();
     mockedSpawn.mockReturnValue(mockProc as any);
@@ -273,6 +276,36 @@ describe('MCPClient', () => {
     // Should fall back to basic context
     expect(result.filePaths).toEqual(['src/a.ts']);
     expect(result.codeSnippets).toEqual({});
+    warnSpy.mockRestore();
+  });
+
+  it('MCPClient handleMessage 收到无效 JSON 时记录 warn 日志（含 [mcp-adapter] 前缀）', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockedSpawnSync.mockReturnValue({ status: 0 } as any);
+    const { mockProc } = createMockChildProcess();
+    mockedSpawn.mockReturnValue(mockProc as any);
+
+    const promise = getReviewContext(['src/a.ts']);
+
+    // Flush microtask queue so connect() completes and sendRequest executes
+    await Promise.resolve();
+
+    // Simulate invalid JSON line — should trigger handleMessage catch
+    const dataCb = mockProc.stdout.on.mock.calls.find((c: any[]) => c[0] === 'data')![1];
+    dataCb(Buffer.from('this is not valid json\n'));
+
+    // Now send a valid response so the promise resolves
+    dataCb(Buffer.from(JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      result: { files: ['src/a.ts'], snippets: {}, blastRadius: [], riskScore: 0 },
+    })));
+
+    await promise;
+    expect(warnSpy).toHaveBeenCalled();
+    const allCalls = warnSpy.mock.calls.map((c) => String(c[0]));
+    expect(allCalls.some((s) => s.includes('[mcp-adapter]'))).toBe(true);
+    warnSpy.mockRestore();
   });
 });
 
@@ -285,8 +318,20 @@ describe('isMCPAvailable (完整实现)', () => {
   });
 
   it('失败 — mock spawnSync 抛出错误，返回 false', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     mockedSpawnSync.mockImplementation(() => { throw new Error('not found'); });
     expect(isMCPAvailable()).toBe(false);
+    warnSpy.mockRestore();
+  });
+
+  it('spawnSync 抛错时记录 warn 日志（含 [mcp-adapter] 前缀）', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockedSpawnSync.mockImplementation(() => { throw new Error('spawnSync boom'); });
+    expect(isMCPAvailable()).toBe(false);
+    expect(warnSpy).toHaveBeenCalled();
+    const allCalls = warnSpy.mock.calls.map((c) => String(c[0]));
+    expect(allCalls.some((s) => s.includes('[mcp-adapter]'))).toBe(true);
+    warnSpy.mockRestore();
   });
 });
 
@@ -348,6 +393,7 @@ describe('getReviewContext (完整实现)', () => {
   });
 
   it('MCP 不可用 — 返回降级上下文', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     // Command exists (isMCPAvailable returns true) but spawn fails
     mockedSpawnSync.mockReturnValue({ status: 0 } as any);
     mockedSpawn.mockImplementation(() => { throw new Error('spawn failed'); });
@@ -357,6 +403,19 @@ describe('getReviewContext (完整实现)', () => {
     expect(ctx.codeSnippets).toEqual({});
     expect(ctx.blastRadius).toEqual([]);
     expect(ctx.riskScore).toBe(0);
+    warnSpy.mockRestore();
+  });
+
+  it('getReviewContext 失败时记录 warn 日志（含 [mcp-adapter] 前缀）', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockedSpawnSync.mockReturnValue({ status: 0 } as any);
+    mockedSpawn.mockImplementation(() => { throw new Error('spawn failed'); });
+
+    await getReviewContext(['src/x.ts']);
+    expect(warnSpy).toHaveBeenCalled();
+    const allCalls = warnSpy.mock.calls.map((c) => String(c[0]));
+    expect(allCalls.some((s) => s.includes('[mcp-adapter]'))).toBe(true);
+    warnSpy.mockRestore();
   });
 });
 
@@ -393,10 +452,24 @@ describe('getImpactRadius (完整实现)', () => {
   });
 
   it('MCP 不可用 — 返回空数组', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     mockedSpawnSync.mockReturnValue({ status: 0 } as any);
     mockedSpawn.mockImplementation(() => { throw new Error('spawn failed'); });
 
     const result = await getImpactRadius(['src/x.ts']);
     expect(result).toEqual([]);
+    warnSpy.mockRestore();
+  });
+
+  it('getImpactRadius 失败时记录 warn 日志（含 [mcp-adapter] 前缀）', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockedSpawnSync.mockReturnValue({ status: 0 } as any);
+    mockedSpawn.mockImplementation(() => { throw new Error('spawn failed'); });
+
+    await getImpactRadius(['src/x.ts']);
+    expect(warnSpy).toHaveBeenCalled();
+    const allCalls = warnSpy.mock.calls.map((c) => String(c[0]));
+    expect(allCalls.some((s) => s.includes('[mcp-adapter]'))).toBe(true);
+    warnSpy.mockRestore();
   });
 });

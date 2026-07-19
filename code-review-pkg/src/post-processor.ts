@@ -312,6 +312,95 @@ export const BUILTIN_FP_RULES: FalsePositiveRule[] = [
       );
     },
   },
+  // Task 17 新增：错误处理建议类低价值发现（"should add error handling" / "consider try-catch"）
+  {
+    id: 'builtin-error-handling-suggestion',
+    name: '错误处理建议类低价值发现',
+    match: (f) => {
+      if (f.confidence >= HIGH_CONFIDENCE_THRESHOLD) return false;
+      if (f.severity !== 'low' && f.severity !== 'medium') return false;
+      const msg = f.message.toLowerCase();
+      return (
+        msg.includes('error handling') ||
+        msg.includes('exception handling') ||
+        msg.includes('add error handling') ||
+        msg.includes('add exception handling') ||
+        msg.includes('try-catch') ||
+        msg.includes('try catch') ||
+        msg.includes('consider try-catch') ||
+        msg.includes('use try-catch')
+      );
+    },
+  },
+  // Task 17 新增：空 catch 块建议类低价值发现（"empty catch block" / "catch block is empty"）
+  {
+    id: 'builtin-empty-catch',
+    name: '空 catch 块建议类低价值发现',
+    match: (f) => {
+      if (f.confidence >= HIGH_CONFIDENCE_THRESHOLD) return false;
+      if (f.severity !== 'low' && f.severity !== 'medium') return false;
+      const msg = f.message.toLowerCase();
+      return (
+        msg.includes('empty catch') ||
+        msg.includes('catch block is empty') ||
+        msg.includes('catch is empty') ||
+        msg.includes('empty catch block')
+      );
+    },
+  },
+  // Task 17 新增：可空引用建议类低价值发现（"potential null reference" / "may be null"）
+  {
+    id: 'builtin-null-reference',
+    name: '可空引用建议类低价值发现',
+    match: (f) => {
+      if (f.confidence >= HIGH_CONFIDENCE_THRESHOLD) return false;
+      if (f.severity !== 'low' && f.severity !== 'medium') return false;
+      const msg = f.message.toLowerCase();
+      return (
+        msg.includes('null reference') ||
+        msg.includes('potential null') ||
+        msg.includes('possible null') ||
+        msg.includes('may be null') ||
+        msg.includes('might be null') ||
+        msg.includes('could be null')
+      );
+    },
+  },
+  // Task 17 新增：未使用变量建议类低价值发现（"unused variable" / "variable is never used"）
+  {
+    id: 'builtin-unused-variable',
+    name: '未使用变量建议类低价值发现',
+    match: (f) => {
+      if (f.confidence >= HIGH_CONFIDENCE_THRESHOLD) return false;
+      if (f.severity !== 'low' && f.severity !== 'medium') return false;
+      const msg = f.message.toLowerCase();
+      return (
+        msg.includes('unused variable') ||
+        msg.includes('variable is never used') ||
+        msg.includes('is never used') ||
+        msg.includes('never used')
+      );
+    },
+  },
+  // Task 17 新增：过长函数建议类低价值发现（"function too long" / "consider splitting"）
+  {
+    id: 'builtin-long-function',
+    name: '过长函数建议类低价值发现',
+    match: (f) => {
+      if (f.confidence >= HIGH_CONFIDENCE_THRESHOLD) return false;
+      if (f.severity !== 'low' && f.severity !== 'medium') return false;
+      const msg = f.message.toLowerCase();
+      return (
+        msg.includes('function too long') ||
+        msg.includes('function is too long') ||
+        msg.includes('method too long') ||
+        msg.includes('method is too long') ||
+        msg.includes('consider splitting') ||
+        msg.includes('split this function') ||
+        msg.includes('split this method')
+      );
+    },
+  },
 ];
 
 /**
@@ -368,32 +457,69 @@ function computeIoU(finding: Finding, comment: ExistingComment): number {
 }
 
 /**
- * 计算消息文本重叠比率。
- * 检查 finding.message 和 comment.body 之间的文本重叠。
+ * 将文本切分为词数组（保留顺序，用于 LCS 计算）。
+ * 与返回 Set 的 tokenize 不同，此函数保留词序与重复词，
+ * 但复用相同的字符过滤规则与长度阈值（length > 1），
+ * 确保 LCS 与 IoU 对"词"的定义一致。
  */
-function computeTextOverlap(finding: Finding, comment: ExistingComment): number {
-  if (finding.file !== comment.file) return 0;
-  if (finding.line !== comment.line) return 0;
+function tokenizeForLcs(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fff]+/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length > 1);
+}
 
-  const msgA = finding.message.toLowerCase();
-  const msgB = comment.body.toLowerCase();
+/**
+ * 计算两个序列的最长公共子序列长度（标准 DP，O(m*n) 时间 / O(m*n) 空间）。
+ */
+function longestCommonSubsequence<T>(a: T[], b: T[]): number {
+  const m = a.length;
+  const n = b.length;
+  if (m === 0 || n === 0) return 0;
 
-  // 使用最长公共子串比例（简化版：检查子串包含）
-  const shorter = msgA.length <= msgB.length ? msgA : msgB;
-  const longer = msgA.length <= msgB.length ? msgB : msgA;
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array<number>(n + 1).fill(0));
 
-  if (shorter.length === 0) return 0;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      if (a[i - 1] === b[j - 1]) {
+        dp[i][j] = dp[i - 1][j - 1] + 1;
+      } else {
+        dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+      }
+    }
+  }
 
-  // 如果较短文本是较长文本的子串，重叠率为 1
-  if (longer.includes(shorter)) return 1;
+  return dp[m][n];
+}
 
-  // 否则使用关键词 IoU 作为代理
-  return computeIoU(finding, comment);
+/**
+ * 计算两个文本的重叠比例（基于最长公共子序列 LCS + Dice 系数）。
+ * 返回 0-1 之间的值，1 表示完全相同，0 表示完全不同。
+ *
+ * 算法：按词切分后计算 LCS 长度，相似度 = 2 * LCS / (lenA + lenB)。
+ * 相比旧的"子串包含 + IoU 回退"实现，能正确识别词序重排的部分重叠
+ * （如 "hello world" vs "world hello" 返回 0.5）。
+ */
+export function computeTextOverlap(a: string, b: string): number {
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+
+  const tokensA = tokenizeForLcs(a);
+  const tokensB = tokenizeForLcs(b);
+
+  if (tokensA.length === 0 || tokensB.length === 0) return 0;
+
+  const lcsLength = longestCommonSubsequence(tokensA, tokensB);
+  return (2 * lcsLength) / (tokensA.length + tokensB.length);
 }
 
 /**
  * IoU 去重：对每个新 finding，与每个现有评论计算 IoU，
  * IoU > threshold 视为重复，跳过。
+ *
+ * 文本重叠（computeTextOverlap）仅在 file/line 匹配时计算，
+ * 与原实现保持一致，避免不同位置的相同文案被误去重。
  */
 export function deduplicateFindings(
   newFindings: Finding[],
@@ -404,8 +530,13 @@ export function deduplicateFindings(
 
   return newFindings.filter((finding) => {
     for (const comment of existingComments) {
+      // 不同文件 / 不同行直接跳过（保留原 computeTextOverlap 的守卫语义，
+      // 避免新 LCS 实现跨位置误去重）
+      if (finding.file !== comment.file || finding.line !== comment.line) {
+        continue;
+      }
       const iou = computeIoU(finding, comment);
-      const textOverlap = computeTextOverlap(finding, comment);
+      const textOverlap = computeTextOverlap(finding.message, comment.body);
       // Either keyword IoU or text overlap exceeds threshold
       if (iou > iouThreshold || textOverlap > iouThreshold) {
         return false; // 重复，跳过

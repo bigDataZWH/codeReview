@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { filterFiles, bundleFiles, detectLanguage, groupByDirectory, excludeGeneratedFiles, sortByPatchSize, getLanguageStats, loadGitignorePatterns, loadReviewIgnorePatterns } from '../src/file-filter.js';
 import type { FileDiff } from '../src/types.js';
 
@@ -591,8 +591,20 @@ describe('loadGitignorePatterns', () => {
   });
 
   it('不存在的目录返回空数组', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const patterns = await loadGitignorePatterns('/nonexistent/path/xyz');
     expect(patterns).toEqual([]);
+    warnSpy.mockRestore();
+  });
+
+  it('读取失败时记录 warn 日志（含 [file-filter] 前缀）', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const patterns = await loadGitignorePatterns('/nonexistent/path/xyz');
+    expect(patterns).toEqual([]);
+    expect(warnSpy).toHaveBeenCalled();
+    const allCalls = warnSpy.mock.calls.map((c) => String(c[0]));
+    expect(allCalls.some((s) => s.includes('[file-filter]'))).toBe(true);
+    warnSpy.mockRestore();
   });
 });
 
@@ -641,7 +653,19 @@ describe('loadReviewIgnorePatterns', () => {
   });
 
   it('不存在的文件返回空数组', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const patterns = await loadReviewIgnorePatterns('/nonexistent/path/xyz');
     expect(patterns).toEqual([]);
+    warnSpy.mockRestore();
+  });
+
+  it('读取失败时记录 warn 日志（含 [file-filter] 前缀）', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const patterns = await loadReviewIgnorePatterns('/nonexistent/path/xyz');
+    expect(patterns).toEqual([]);
+    expect(warnSpy).toHaveBeenCalled();
+    const allCalls = warnSpy.mock.calls.map((c) => String(c[0]));
+    expect(allCalls.some((s) => s.includes('[file-filter]'))).toBe(true);
+    warnSpy.mockRestore();
   });
 });

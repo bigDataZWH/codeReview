@@ -1,4 +1,5 @@
 import type { FileDiff, FileBundle, FilterConfig, BundleConfig } from './types.js';
+import { globToRegex } from './glob.js';
 
 // ── 扩展名 -> 语言映射 ──
 
@@ -107,67 +108,7 @@ export function detectLanguage(path: string): string | undefined {
 }
 
 // ── 手写 glob 匹配器 ──
-// 支持: * (除 / 外任意字符), ** (任意路径), ? (单个字符), {a,b} (a 或 b)
-
-function globToRegex(pattern: string): RegExp {
-  // 将 glob 模式转换为正则表达式
-  let regex = '';
-  let i = 0;
-  const len = pattern.length;
-
-  while (i < len) {
-    const ch = pattern[i];
-
-    if (ch === '*') {
-      if (i + 1 < len && pattern[i + 1] === '*') {
-        i += 2;
-        // 跳过后续的 /
-        if (i < len && pattern[i] === '/') {
-          i++;
-        }
-        // ** at end: match all remaining content including empty string
-        if (i >= len) {
-          regex += '.*';
-        } else {
-          // **/content: match zero or more path segments, then a /
-          regex += '(?:(?:[^/]*(?:/(?:[^/]*))*)/)?';
-        }
-      } else {
-        // * 匹配除 / 外的任意字符
-        regex += '[^/]*';
-        i++;
-      }
-    } else if (ch === '?') {
-      // ? 匹配单个非 / 字符
-      regex += '[^/]';
-      i++;
-    } else if (ch === '{') {
-      // {a,b} 匹配 a 或 b
-      const end = pattern.indexOf('}', i);
-      if (end === -1) {
-        regex += '\\{';
-        i++;
-      } else {
-        const inner = pattern.substring(i + 1, end);
-        const options = inner.split(',');
-        regex += '(?:' + options.map(escapeRegex).join('|') + ')';
-        i = end + 1;
-      }
-    } else if ('.+^${}()|[]\\'.includes(ch)) {
-      regex += '\\' + ch;
-      i++;
-    } else {
-      regex += ch;
-      i++;
-    }
-  }
-
-  return new RegExp('^' + regex + '$');
-}
-
-function escapeRegex(s: string): string {
-  return s.replace(/[.+^${}()|[\]\\]/g, '\\$&');
-}
+// 实现：见 src/glob.ts（与 feedback.ts 共用）
 
 /** 判断文件路径是否匹配 glob 模式 */
 function matchesGlob(path: string, pattern: string): boolean {
@@ -407,7 +348,8 @@ export async function loadGitignorePatterns(rootDir: string): Promise<string[]> 
       .split('\n')
       .map((l) => l.trim())
       .filter((l) => l.length > 0 && !l.startsWith('#'));
-  } catch {
+  } catch (err) {
+    console.warn('[file-filter] loadGitignorePatterns failed to read .gitignore:', err);
     return [];
   }
 }
@@ -425,7 +367,8 @@ export async function loadReviewIgnorePatterns(rootDir: string): Promise<string[
       .split('\n')
       .map((l) => l.trim())
       .filter((l) => l.length > 0 && !l.startsWith('#'));
-  } catch {
+  } catch (err) {
+    console.warn('[file-filter] loadReviewIgnorePatterns failed to read .opencode-review-ignore:', err);
     return [];
   }
 }

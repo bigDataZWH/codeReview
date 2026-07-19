@@ -135,6 +135,31 @@ describe('comment-publisher', () => {
       const options = makeOptions({ mode: 'replace', findings: [] });
       await expect(publishReview(options)).rejects.toThrow(/500|Internal Server Error/i);
     });
+
+    it('API 错误响应 body 非 JSON 时记录 warn 日志（含 [comment-publisher] 前缀）', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      // 返回 500 状态码 + 非 JSON body（json() 抛错）
+      vi.spyOn(globalThis, 'fetch').mockImplementation((url: string | URL | Request) => {
+        const urlStr = url.toString();
+        if (urlStr.includes('/pulls/42/comments') && !urlStr.includes('/issues/')) {
+          return Promise.resolve(
+            new Response('not-json-body', {
+              status: 500,
+              statusText: 'Internal Server Error',
+              headers: { 'Content-Type': 'text/plain' },
+            }),
+          );
+        }
+        return Promise.resolve(makeJsonResponse(404, {}));
+      });
+
+      const options = makeOptions({ mode: 'replace', findings: [] });
+      await expect(publishReview(options)).rejects.toThrow(/500/i);
+      expect(warnSpy).toHaveBeenCalled();
+      const allCalls = warnSpy.mock.calls.map((c) => String(c[0]));
+      expect(allCalls.some((s) => s.includes('[comment-publisher]'))).toBe(true);
+      warnSpy.mockRestore();
+    });
   });
 
   // ==================== publishInlineComments ====================

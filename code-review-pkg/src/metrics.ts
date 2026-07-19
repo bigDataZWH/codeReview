@@ -10,7 +10,7 @@
 // - 趋势分桶采用按天聚合，避免数据点过多
 // - 不引入第三方图表库，仅输出原始数据结构，由调用方决定渲染方式
 
-import type { FeedbackStore } from './feedback.js';
+import { getRuleEffectiveness, type FeedbackStore, type RuleEffectiveness } from './feedback.js';
 import type { Finding, Severity } from './types.js';
 
 /** 度量指标输入：会话快照 */
@@ -312,14 +312,8 @@ export interface DashboardCharts {
   categoryBar: Record<string, number>;
   /** 趋势折线图 */
   trendLine: TrendBucket[];
-  /** 规则有效性排行 */
-  ruleEffectiveness: Array<{
-    ruleId: string;
-    acceptRate: number;
-    rejectRate: number;
-    totalFeedback: number;
-    grade: 'good' | 'medium' | 'poor';
-  }>;
+  /** 规则有效性排行（复用 feedback.RuleEffectiveness，统一逻辑） */
+  ruleEffectiveness: RuleEffectiveness[];
 }
 
 /** 完整仪表盘数据 */
@@ -342,8 +336,8 @@ export function generateDashboardData(input: MetricsInput): DashboardData {
   const metrics = collectMetrics(input);
   const { feedback } = input;
 
-  // 规则有效性（从 feedback store 直接聚合）
-  const ruleEffectiveness = computeRuleEffectiveness(feedback);
+  // 规则有效性（复用 feedback.getRuleEffectiveness，统一逻辑）
+  const ruleEffectiveness = getRuleEffectiveness(feedback);
 
   return {
     kpi: {
@@ -362,56 +356,4 @@ export function generateDashboardData(input: MetricsInput): DashboardData {
     },
     metrics,
   };
-}
-
-/**
- * 从 feedback store 计算规则有效性。
- * 同 getRuleEffectiveness，但返回更简洁的结构供仪表盘使用。
- */
-function computeRuleEffectiveness(feedback: FeedbackStore): Array<{
-  ruleId: string;
-  acceptRate: number;
-  rejectRate: number;
-  totalFeedback: number;
-  grade: 'good' | 'medium' | 'poor';
-}> {
-  const all = feedback.getAllFeedback();
-  const byRule = new Map<string, { accept: number; reject: number; modify: number }>();
-  for (const r of all) {
-    if (!r.ruleId) continue;
-    const entry = byRule.get(r.ruleId) ?? { accept: 0, reject: 0, modify: 0 };
-    if (r.action === 'accept') entry.accept++;
-    else if (r.action === 'reject') entry.reject++;
-    else if (r.action === 'modify') entry.modify++;
-    byRule.set(r.ruleId, entry);
-  }
-
-  const result: Array<{
-    ruleId: string;
-    acceptRate: number;
-    rejectRate: number;
-    totalFeedback: number;
-    grade: 'good' | 'medium' | 'poor';
-  }> = [];
-
-  for (const [ruleId, counts] of byRule.entries()) {
-    const total = counts.accept + counts.reject + counts.modify;
-    if (total === 0) continue;
-    const acceptRate = counts.accept / total;
-    const rejectRate = counts.reject / total;
-    let grade: 'good' | 'medium' | 'poor';
-    if (acceptRate >= 0.7) grade = 'good';
-    else if (acceptRate >= 0.3) grade = 'medium';
-    else grade = 'poor';
-    result.push({
-      ruleId,
-      acceptRate,
-      rejectRate,
-      totalFeedback: total,
-      grade,
-    });
-  }
-
-  result.sort((a, b) => b.acceptRate - a.acceptRate);
-  return result;
 }

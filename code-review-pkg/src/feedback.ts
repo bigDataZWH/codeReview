@@ -12,6 +12,8 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import type { Finding, Severity } from './types.js';
+import { parseMinimalYaml } from './yaml-lite.js';
+import { globToRegex } from './glob.js';
 
 // ==================== 反馈类型 ====================
 
@@ -299,43 +301,6 @@ export interface IgnoreConfig {
 }
 
 /**
- * 将 glob 模式转换为正则表达式。
- * 支持：
- * - `**` 跨目录通配
- * - `*` 单段通配（不跨 `/`）
- * - `?` 单字符
- * - 其他字符按字面值处理
- */
-function globToRegex(pattern: string): RegExp {
-  let re = '^';
-  for (let i = 0; i < pattern.length; i++) {
-    const ch = pattern[i];
-    if (ch === '*') {
-      if (pattern[i + 1] === '*') {
-        // ** 跨目录
-        re += '.*';
-        i++;
-        // 跳过紧跟的 /
-        if (pattern[i + 1] === '/') {
-          i++;
-        }
-      } else {
-        // * 单段
-        re += '[^/]*';
-      }
-    } else if (ch === '?') {
-      re += '[^/]';
-    } else if (/[.+^${}()|[\]\\]/.test(ch)) {
-      re += '\\' + ch;
-    } else {
-      re += ch;
-    }
-  }
-  re += '$';
-  return new RegExp(re);
-}
-
-/**
  * 判断 finding 是否应被忽略。
  *
  * 规则匹配逻辑：
@@ -399,77 +364,25 @@ export function loadIgnoreConfig(configPath: string): IgnoreConfig {
 
 /**
  * 最小 YAML 解析器：仅支持本项目忽略配置的结构。
- * - 顶层 `rules:` 后跟列表
- * - 列表项以 `  - ` 开头，后续同缩进字段为该规则属性
- * - 支持 `#` 注释行、空行
- * - 字符串值支持单/双引号包裹
+ *
+ * 实际 YAML 解析委托给 `src/yaml-lite.ts` 的 `parseMinimalYaml`（与 rule-engine.ts 共用）。
+ * 此处仅负责把通用解析结果中的 `rules` 列表映射为 `IgnoreRule[]`，
+ * 通过 `assignRuleField` 过滤未知字段、剥离引号、跳过空值。
  */
 function parseIgnoreYaml(text: string): IgnoreConfig {
+  const root = parseMinimalYaml(text);
+  const rawRules = (root.rules as Array<Record<string, unknown>> | undefined) ?? [];
   const rules: IgnoreRule[] = [];
-  let current: IgnoreRule | null = null;
-  let inRules = false;
-  const lines = text.split('\n');
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-
-    const indent = line.length - line.trimStart().length;
-
-    // 顶层 rules: 标记
-    if (indent === 0) {
-      if (trimmed === 'rules:' || trimmed === 'rules: []') {
-        inRules = trimmed === 'rules:';
-        // rules: [] 表示空数组
-        if (!inRules) {
-          return { rules: [] };
-        }
-        // 已有正在构建的规则收尾
-        if (current) {
-          rules.push(current);
-          current = null;
-        }
-        continue;
-      }
-      // 其他顶层键忽略
-      inRules = false;
-      if (current) {
-        rules.push(current);
-        current = null;
-      }
-      continue;
+  for (const raw of rawRules) {
+    const rule: IgnoreRule = {};
+    for (const [key, val] of Object.entries(raw)) {
+      if (val === undefined || val === null) continue;
+      // 通用解析器可能把值转为 number / boolean，统一转回字符串交给 assignRuleField 处理
+      const rawVal = typeof val === 'string' ? val : String(val);
+      assignRuleField(rule, key, rawVal);
     }
-
-    if (!inRules) continue;
-
-    // 列表项起始：形如 `- key: value` 或 `- key:`（无值）
-    const itemMatch = trimmed.match(/^-\s+([a-zA-Z]+):\s*(.*)$/);
-    if (itemMatch) {
-      if (current) rules.push(current);
-      current = {};
-      const key = itemMatch[1];
-      const rawVal = itemMatch[2];
-      assignRuleField(current, key, rawVal);
-      continue;
-    }
-
-    // 列表项起始：仅 `-`（无键值，后续行提供字段）
-    if (trimmed === '-' || /^-\s*$/.test(trimmed)) {
-      if (current) rules.push(current);
-      current = {};
-      continue;
-    }
-
-    // 当前规则的后续字段（key: value）
-    const fieldMatch = trimmed.match(/^([a-zA-Z]+):\s*(.*)$/);
-    if (fieldMatch && current) {
-      const key = fieldMatch[1];
-      const rawVal = fieldMatch[2];
-      assignRuleField(current, key, rawVal);
-    }
+    rules.push(rule);
   }
-
-  if (current) rules.push(current);
   return { rules };
 }
 

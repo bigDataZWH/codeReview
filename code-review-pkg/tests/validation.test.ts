@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateFinding, validatePipelineConfig } from '../src/validation.js';
+import { validateFinding, validatePipelineConfig, validatePipelineConfigWithWarnings } from '../src/validation.js';
 
 describe('validateFinding', () => {
   it('returns no errors for a valid finding', () => {
@@ -117,5 +117,56 @@ describe('validatePipelineConfig', () => {
       rules: 'not-array' as any,
     });
     expect(errors).toContain('rules must be an array');
+  });
+});
+
+describe('validatePipelineConfig warnings', () => {
+  it('warns when mcpEnabled is true but mcpEndpoint is missing', () => {
+    const { warnings } = validatePipelineConfigWithWarnings({
+      mcpEnabled: true,
+      filter: {},
+    });
+    expect(warnings).toContain('mcpEnabled is true but mcpEndpoint is not configured');
+  });
+
+  it('does not warn when mcpEnabled is true and mcpEndpoint is provided', () => {
+    const { warnings } = validatePipelineConfigWithWarnings({
+      mcpEnabled: true,
+      mcpEndpoint: 'http://localhost:3000',
+      filter: {},
+    });
+    expect(warnings).not.toContain('mcpEnabled is true but mcpEndpoint is not configured');
+  });
+
+  it('does not warn when mcpEnabled is false', () => {
+    const { warnings } = validatePipelineConfigWithWarnings({
+      mcpEnabled: false,
+      filter: {},
+    });
+    expect(warnings).not.toContain('mcpEnabled is true but mcpEndpoint is not configured');
+  });
+
+  it('does not warn when mcpEnabled is not set', () => {
+    const { warnings } = validatePipelineConfigWithWarnings({
+      filter: {},
+    });
+    expect(warnings).not.toContain('mcpEnabled is true but mcpEndpoint is not configured');
+  });
+
+  it('still returns errors alongside warnings', () => {
+    const { errors, warnings } = validatePipelineConfigWithWarnings({
+      mcpEnabled: true,
+    });
+    expect(errors).toContain('filter is required');
+    expect(warnings).toContain('mcpEnabled is true but mcpEndpoint is not configured');
+  });
+
+  it('validatePipelineConfig stays backward compatible (returns only errors)', () => {
+    const result = validatePipelineConfig({
+      mcpEnabled: true,
+      filter: {},
+    });
+    expect(Array.isArray(result)).toBe(true);
+    expect(result).not.toContain('mcpEnabled is true but mcpEndpoint is not configured');
   });
 });

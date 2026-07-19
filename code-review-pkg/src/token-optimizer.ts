@@ -10,9 +10,10 @@
 // - 压缩策略可配置：通过 CompressionOptions 控制移除空行、注释、上下文行数
 // - 模型分级默认 3 档（small/medium/large），支持自定义 tier 配置
 // - 安全风险强制升级到 large 模型，避免漏报
-// - token 估算使用简单的字符数 / 4 启发式，与现有 prompt-builder.estimatePromptTokens 保持一致
+// - token 估算委托给 token-counter.countTokens（CJK 感知的 GPT 启发式），与 prompt-builder.estimatePromptTokens 保持一致
 
 import type { FileDiff, Hunk } from './types.js';
+import { countTokens } from './token-counter.js';
 
 /** 模型分级 */
 export type ModelTierName = 'small' | 'medium' | 'large' | string;
@@ -254,11 +255,13 @@ export function selectModelByComplexity(
 }
 
 /**
- * 估算文本的 token 数（字符数 / 4 启发式，与 prompt-builder 保持一致）。
+ * 估算文本的 token 数（基于 GPT tokenizer 启发式，CJK 感知）。
+ *
+ * 委托给 `countTokens`，对中文/日文/韩文等宽字符显著比字符数/4 更准确，
+ * 对纯 ASCII 文本结果与 `Math.ceil(len / 4)` 一致（向后兼容）。
  */
 export function estimateTokenCount(text: string): number {
-  if (!text) return 0;
-  return Math.ceil(text.length / 4);
+  return countTokens(text);
 }
 
 /**

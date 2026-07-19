@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -562,6 +562,7 @@ describe('持久化到 JSON 文件', () => {
   });
 
   it('加载损坏的 JSON 文件时静默回退到空状态', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const file = join(dir, 'broken.json');
     writeFileSync(file, 'not-json {{{', 'utf8');
     const s = new StateStore({ persistFile: file });
@@ -569,6 +570,19 @@ describe('持久化到 JSON 文件', () => {
     // 写入新数据应正常工作
     s.createSession({ id: 'after-load', filesTotal: 1 });
     expect(s.getSession('after-load')?.id).toBe('after-load');
+    warnSpy.mockRestore();
+  });
+
+  it('加载损坏的 JSON 文件时记录 warn 日志（含 [state] 前缀）', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const file = join(dir, 'broken-warn.json');
+    writeFileSync(file, 'not-json {{{', 'utf8');
+    const s = new StateStore({ persistFile: file });
+    expect(s.listSessions()).toHaveLength(0);
+    expect(warnSpy).toHaveBeenCalled();
+    const allCalls = warnSpy.mock.calls.map((c) => String(c[0]));
+    expect(allCalls.some((s) => s.includes('[state]'))).toBe(true);
+    warnSpy.mockRestore();
   });
 
   it('persistFile 位于不存在的子目录时自动创建', () => {

@@ -185,19 +185,130 @@ export type PipelineMiddleware = {
 
 /**
  * 带中间件的管道执行。
+ *
+ * 内联 runPipeline 的执行流程，在 parseDiff 和 filterFiles 步骤之后
+ * 分别触发 afterParse / afterFilter 钩子，最终结果返回前触发 afterBuild。
+ *
+ * 注意：为保持 runPipeline 行为不变，本函数不复用 runPipeline，
+ * 而是复制其内部步骤并在适当位置插入钩子调用。
  */
 export async function runPipelineWithMiddleware(
   diffText: string,
   config: PipelineConfig,
   middlewares: PipelineMiddleware[],
 ): Promise<PipelineResult> {
-  const result = await runPipeline(diffText, config);
+  const startTime = performance.now();
+  const cache = config.cache;
+  const cacheOpts = config.cacheOptions ?? {};
 
-  let modified: PipelineResult = result;
+  // 步骤 1: 解析 diff（带缓存）
+  let allDiffs: FileDiff[];
+  if (cache) {
+    const diffKey = `${CACHE_KEY_PREFIX.diff}${hashKey(diffText)}`;
+    allDiffs = await cache.getOrCreate<FileDiff[]>(diffKey, () => parseDiff(diffText), {
+      ttl: cacheOpts.diffTtlMs,
+    });
+  } else {
+    allDiffs = parseDiff(diffText);
+  }
 
+  // 触发 afterParse 钩子（在 parse 之后、filter 之前）
   for (const mw of middlewares) {
-    // 注意：afterParse 和 afterFilter 需要在管道内部拦截
-    // 当前实现仅在结果层面支持 afterBuild
+    if (mw.afterParse) {
+      allDiffs = mw.afterParse(allDiffs);
+    }
+  }
+
+  // 步骤 2: 过滤文件
+  let filteredDiffs: FileDiff[] = filterFiles(allDiffs, config.filter);
+
+  // 触发 afterFilter 钩子（在 filter 之后、bundle 之前）
+  for (const mw of middlewares) {
+    if (mw.afterFilter) {
+      filteredDiffs = mw.afterFilter(filteredDiffs);
+    }
+  }
+
+  // 步骤 3: 打包文件
+  const bundles = bundleFiles(filteredDiffs, config.bundle);
+
+  // 步骤 4: 规则匹配标注（带缓存）
+  const rules = config.rules ?? [];
+  const ruleVersion = cacheOpts.ruleVersion ?? 'v1';
+  const annotatedBundles: FileBundle[] = await Promise.all(
+    bundles.map(async (bundle) => {
+      // 无规则时直接返回原 bundle
+      if (rules.length === 0) {
+        return { ...bundle, annotations: [...bundle.annotations] };
+      }
+      if (cache) {
+        // 缓存键：规则版本 + 文件路径 + 文件内容哈希 + 规则集哈希
+        const contentHash = hashKey(
+          JSON.stringify(bundle.primary.hunks.map((h) => h.lines)),
+        );
+        const rulesHash = hashKey(JSON.stringify(rules.map((r) => r.id)));
+        const ruleKey = `${CACHE_KEY_PREFIX.rules}${ruleVersion}:${bundle.primary.path}:${contentHash}:${rulesHash}`;
+        const annotations = await cache.getOrCreate<RuleAnnotation[]>(ruleKey, () =>
+          matchRules(bundle, rules),
+        );
+        return { ...bundle, annotations: [...bundle.annotations, ...annotations] };
+      }
+      const annotations = matchRules(bundle, rules);
+      return { ...bundle, annotations: [...bundle.annotations, ...annotations] };
+    }),
+  );
+
+  // 步骤 5: MCP 上下文（可选，带缓存）
+  let context: MCPContextResult | undefined;
+  if (config.mcpEnabled) {
+    const filePaths = filteredDiffs.map((d) => d.path);
+    if (cache) {
+      const mcpKey = `${CACHE_KEY_PREFIX.mcp}${hashKey(filePaths.join('\n'))}`;
+      context = await cache.getOrCreate<MCPContextResult>(
+        mcpKey,
+        () => getReviewContext(filePaths, config.mcpEndpoint),
+        { ttl: cacheOpts.mcpTtlMs },
+      );
+    } else {
+      context = await getReviewContext(filePaths, config.mcpEndpoint);
+    }
+  }
+
+  // 步骤 6: 构建 prompt
+  const prompt = buildReviewPrompt({
+    filteredDiffs,
+    bundles,
+    annotatedBundles,
+    context,
+  });
+
+  // 构建基础结果
+  let result: PipelineResult;
+  // dry-run: 只执行到 prompt 构建阶段
+  if (config.dryRun) {
+    result = {
+      filteredDiffs,
+      bundles,
+      annotatedBundles,
+      context,
+      prompt,
+      findings: [],
+      durationMs: performance.now() - startTime,
+    };
+  } else {
+    result = {
+      filteredDiffs,
+      bundles,
+      annotatedBundles,
+      context,
+      prompt,
+      durationMs: performance.now() - startTime,
+    };
+  }
+
+  // 在最终结果返回前触发 afterBuild 钩子
+  let modified: PipelineResult = result;
+  for (const mw of middlewares) {
     if (mw.afterBuild) {
       modified = mw.afterBuild(modified);
     }
@@ -397,23 +508,47 @@ export async function runPipelineBatched(
   const baseResult = await runPipeline(diffText, config);
   const filteredDiffs = baseResult.filteredDiffs;
 
-  // 文件数小于阈值，不分批
-  if (filteredDiffs.length < threshold) {
-    return baseResult;
-  }
-
   // 优先级排序
   let orderedDiffs = filteredDiffs;
   if (prioritize) {
     orderedDiffs = prioritizeDiffs(filteredDiffs, baseResult.annotatedBundles);
   }
 
-  // 分批处理（这里只是分批计算 findings 占位，实际审查逻辑由调用方决定）
-  // 我们用 batchProcess 来生成批次元信息，processFn 返回空 findings（保持管道纯净）
+  // 是否触发分批（仅大 PR 携带 batchInfo）
+  const isBatched = filteredDiffs.length >= threshold;
+
+  // 分批处理：processFn 调用 matchRules + correctLineLocations + filterFalsePositives
   const batchRes = await batchProcess(orderedDiffs, {
     batchSize,
     parallel,
-    processFn: async () => [],
+    processFn: async (batch) => {
+      const bundles = bundleFiles(batch, config.bundle);
+      const rules = config.rules ?? [];
+
+      // 对每个 bundle 调用 matchRules，将 annotations 转为 findings
+      let findings: Finding[] = [];
+      for (const bundle of bundles) {
+        const annotations = rules.length > 0 ? matchRules(bundle, rules) : [];
+        for (const annotation of annotations) {
+          findings.push({
+            file: bundle.primary.path,
+            line: annotation.line ?? 0,
+            severity: annotation.severity,
+            category: annotation.category,
+            message: annotation.message,
+            confidence: 1.0,
+            source: 'rule',
+            ruleId: annotation.ruleId,
+          });
+        }
+      }
+
+      // 后处理：行号修正 + 误报过滤
+      findings = correctLineLocations(findings, batch);
+      findings = filterFalsePositives(findings, config.falsePositiveRules);
+
+      return findings;
+    },
   });
 
   // 重新构建 prompt（基于排序后的 diffs，保持稳定输出）
@@ -424,16 +559,23 @@ export async function runPipelineBatched(
     context: baseResult.context,
   });
 
-  return {
+  const result: PipelineResult = {
     ...baseResult,
     filteredDiffs: orderedDiffs,
     prompt,
-    batchInfo: {
+    findings: batchRes.allFindings,
+  };
+
+  // 仅大 PR 携带 batchInfo（保持向后兼容：小 PR 不分批）
+  if (isBatched) {
+    result.batchInfo = {
       batchesCount: batchRes.batches.length,
       totalFiles: batchRes.totalProcessed,
       batchSize,
       prioritized: prioritize,
       failedBatches: batchRes.errors.length,
-    },
-  };
+    };
+  }
+
+  return result;
 }

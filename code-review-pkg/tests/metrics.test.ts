@@ -325,6 +325,128 @@ describe('generateDashboardData 仪表盘数据', () => {
   });
 });
 
+// ==================== Task 15: 统一规则有效性计算 ====================
+
+describe('Task 15: 仪表盘 ruleEffectiveness 复用 feedback.getRuleEffectiveness', () => {
+  it('仪表盘 ruleEffectiveness 与 feedback.getRuleEffectiveness 完全一致', () => {
+    const store = new FeedbackStore();
+    // rule-a: 5 accept, 1 reject → acceptRate ≈ 0.833 (good)
+    for (let i = 0; i < 5; i++) store.recordFeedback(`a-${i}`, 'accept', undefined, makeFinding({ ruleId: 'rule-a' }));
+    store.recordFeedback('r-0', 'reject', undefined, makeFinding({ ruleId: 'rule-a' }));
+    // rule-b: 1 accept, 3 reject, 2 modify → acceptRate = 0.167 (poor)
+    store.recordFeedback('a2-0', 'accept', undefined, makeFinding({ ruleId: 'rule-b' }));
+    for (let i = 0; i < 3; i++) store.recordFeedback(`r2-${i}`, 'reject', undefined, makeFinding({ ruleId: 'rule-b' }));
+    for (let i = 0; i < 2; i++) store.recordFeedback(`m2-${i}`, 'modify', undefined, makeFinding({ ruleId: 'rule-b' }));
+
+    const dashboard = generateDashboardData({
+      sessions: [],
+      findings: [],
+      feedback: store,
+    });
+    const direct = getRuleEffectiveness(store);
+
+    // metrics 应直接复用 feedback.getRuleEffectiveness，故输出完全一致
+    expect(dashboard.charts.ruleEffectiveness).toEqual(direct);
+  });
+
+  it('仪表盘 ruleEffectiveness 包含完整 RuleEffectiveness 字段（acceptCount/rejectCount/modifyCount）', () => {
+    const store = new FeedbackStore();
+    for (let i = 0; i < 5; i++) store.recordFeedback(`a-${i}`, 'accept', undefined, makeFinding({ ruleId: 'rule-a' }));
+    for (let i = 0; i < 3; i++) store.recordFeedback(`r-${i}`, 'reject', undefined, makeFinding({ ruleId: 'rule-a' }));
+    for (let i = 0; i < 2; i++) store.recordFeedback(`m-${i}`, 'modify', undefined, makeFinding({ ruleId: 'rule-a' }));
+
+    const dashboard = generateDashboardData({
+      sessions: [],
+      findings: [],
+      feedback: store,
+    });
+
+    const entry = dashboard.charts.ruleEffectiveness[0];
+    expect(entry).toBeDefined();
+    expect(entry.ruleId).toBe('rule-a');
+    expect(entry.acceptCount).toBe(5);
+    expect(entry.rejectCount).toBe(3);
+    expect(entry.modifyCount).toBe(2);
+    expect(entry.totalFeedback).toBe(10);
+    expect(entry.acceptRate).toBeCloseTo(0.5, 5);
+    expect(entry.rejectRate).toBeCloseTo(0.3, 5);
+    expect(entry.grade).toBe('medium');
+  });
+
+  it('仪表盘 ruleEffectiveness 等级阈值与 feedback.getRuleEffectiveness 一致', () => {
+    const cases = [
+      { accept: 7, reject: 3, modify: 0, expectedGrade: 'good' as const },    // 0.7
+      { accept: 4, reject: 6, modify: 0, expectedGrade: 'medium' as const },  // 0.4
+      { accept: 1, reject: 9, modify: 0, expectedGrade: 'poor' as const },    // 0.1
+    ];
+
+    for (const c of cases) {
+      const store = new FeedbackStore();
+      for (let i = 0; i < c.accept; i++) store.recordFeedback(`a-${i}`, 'accept', undefined, makeFinding({ ruleId: 'r1' }));
+      for (let i = 0; i < c.reject; i++) store.recordFeedback(`r-${i}`, 'reject', undefined, makeFinding({ ruleId: 'r1' }));
+      for (let i = 0; i < c.modify; i++) store.recordFeedback(`m-${i}`, 'modify', undefined, makeFinding({ ruleId: 'r1' }));
+
+      const dashboard = generateDashboardData({
+        sessions: [],
+        findings: [],
+        feedback: store,
+      });
+      const direct = getRuleEffectiveness(store);
+
+      // 仪表盘输出与直接调用 feedback.getRuleEffectiveness 应有相同等级
+      expect(dashboard.charts.ruleEffectiveness[0].grade).toBe(c.expectedGrade);
+      expect(dashboard.charts.ruleEffectiveness[0].grade).toBe(direct[0].grade);
+    }
+  });
+
+  it('空反馈时仪表盘 ruleEffectiveness 返回空数组（与 feedback.getRuleEffectiveness 一致）', () => {
+    const store = new FeedbackStore();
+    const dashboard = generateDashboardData({
+      sessions: [],
+      findings: [],
+      feedback: store,
+    });
+    expect(dashboard.charts.ruleEffectiveness).toEqual([]);
+    expect(dashboard.charts.ruleEffectiveness).toEqual(getRuleEffectiveness(store));
+  });
+
+  it('无 ruleId 的反馈不计入仪表盘 ruleEffectiveness（与 feedback.getRuleEffectiveness 一致）', () => {
+    const store = new FeedbackStore();
+    for (let i = 0; i < 10; i++) store.recordFeedback(`a-${i}`, 'accept', undefined, makeFinding({ ruleId: undefined }));
+
+    const dashboard = generateDashboardData({
+      sessions: [],
+      findings: [],
+      feedback: store,
+    });
+    expect(dashboard.charts.ruleEffectiveness).toEqual([]);
+    expect(dashboard.charts.ruleEffectiveness).toEqual(getRuleEffectiveness(store));
+  });
+
+  it('多规则按 acceptRate 降序排序（与 feedback.getRuleEffectiveness 一致）', () => {
+    const store = new FeedbackStore();
+    // good-rule: 9 accept, 1 reject → 0.9 (good)
+    for (let i = 0; i < 9; i++) store.recordFeedback(`g-${i}`, 'accept', undefined, makeFinding({ ruleId: 'good-rule' }));
+    store.recordFeedback('g-r', 'reject', undefined, makeFinding({ ruleId: 'good-rule' }));
+    // mid-rule: 5 accept, 5 reject → 0.5 (medium)
+    for (let i = 0; i < 5; i++) store.recordFeedback(`m-${i}`, 'accept', undefined, makeFinding({ ruleId: 'mid-rule' }));
+    for (let i = 0; i < 5; i++) store.recordFeedback(`m-r-${i}`, 'reject', undefined, makeFinding({ ruleId: 'mid-rule' }));
+    // bad-rule: 1 accept, 9 reject → 0.1 (poor)
+    store.recordFeedback('b-a', 'accept', undefined, makeFinding({ ruleId: 'bad-rule' }));
+    for (let i = 0; i < 9; i++) store.recordFeedback(`b-r-${i}`, 'reject', undefined, makeFinding({ ruleId: 'bad-rule' }));
+
+    const dashboard = generateDashboardData({
+      sessions: [],
+      findings: [],
+      feedback: store,
+    });
+    const direct = getRuleEffectiveness(store);
+
+    expect(dashboard.charts.ruleEffectiveness.map((e) => e.ruleId)).toEqual(['good-rule', 'mid-rule', 'bad-rule']);
+    expect(dashboard.charts.ruleEffectiveness).toEqual(direct);
+  });
+});
+
 // ==================== getRuleEffectiveness 规则有效性评估 ====================
 
 describe('getRuleEffectiveness 规则有效性评估', () => {

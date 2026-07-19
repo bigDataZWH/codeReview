@@ -240,7 +240,9 @@ describe('E2E：安全审查流程', () => {
     });
 
     it('parseReflectionResponse 非法 JSON 返回 0.5', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       expect(parseReflectionResponse('not json')).toBe(0.5);
+      warnSpy.mockRestore();
     });
 
     it('parseReflectionResponse clamp 到 [0,1]', () => {
@@ -281,6 +283,7 @@ describe('E2E：安全审查流程', () => {
     });
 
     it('reflectFindings LLM 失败时降级保留所有 findings', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       globalThis.fetch = vi.fn(async () =>
         new Response('{"error": "internal"}', { status: 500 }),
       ) as unknown as typeof globalThis.fetch;
@@ -296,6 +299,7 @@ describe('E2E：安全审查流程', () => {
 
       const reflected = await reflectFindings(findings, config, 0.5);
       expect(reflected.length).toBe(1); // 降级保留
+      warnSpy.mockRestore();
     });
 
     it('reflectFindings 空 findings 返回空数组', async () => {

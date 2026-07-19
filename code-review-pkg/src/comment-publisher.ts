@@ -56,8 +56,9 @@ async function githubFetch(
       if (body.message) {
         errorMessage = `${response.status} ${body.message}`;
       }
-    } catch {
+    } catch (err) {
       // ignore JSON parse error
+      console.warn('[comment-publisher] githubFetch failed to parse error response body:', err);
     }
     throw new Error(errorMessage);
   }

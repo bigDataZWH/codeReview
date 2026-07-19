@@ -154,8 +154,9 @@ export class StateStore {
         this.seqCounter = i;
         this.findings = Array.isArray(data.findings) ? data.findings : [];
       }
-    } catch {
+    } catch (err) {
       // 文件损坏时静默回退到空状态
+      console.warn('[state] loadFromDisk failed to parse persist file, falling back to empty state:', err);
       this.sessions = new Map();
       this.sessionSeq = new Map();
       this.findings = [];

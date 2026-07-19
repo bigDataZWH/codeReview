@@ -167,7 +167,8 @@ export class L2DiskCache {
     let files: string[];
     try {
       files = readdirSync(this.cacheDir);
-    } catch {
+    } catch (err) {
+      console.warn('[cache] loadIndex readdirSync failed:', err);
       return;
     }
     for (const file of files) {
@@ -178,8 +179,9 @@ export class L2DiskCache {
         if (data && typeof data.key === 'string') {
           this.keyToFilename.set(data.key, file);
         }
-      } catch {
+      } catch (err) {
         // 损坏文件忽略，不加入索引
+        console.warn('[cache] loadIndex failed to parse cache file:', file, err);
       }
     }
   }
@@ -222,7 +224,8 @@ export class L2DiskCache {
         return null;
       }
       return data;
-    } catch {
+    } catch (err) {
+      console.warn('[cache] getEntry failed to read cache file:', filename, err);
       return null;
     }
   }
@@ -239,7 +242,8 @@ export class L2DiskCache {
         return false;
       }
       return true;
-    } catch {
+    } catch (err) {
+      console.warn('[cache] has failed to read cache file:', filename, err);
       return false;
     }
   }
@@ -250,8 +254,9 @@ export class L2DiskCache {
     if (!filename) return false;
     try {
       unlinkSync(join(this.cacheDir, filename));
-    } catch {
+    } catch (err) {
       // 文件可能已被删除
+      console.warn('[cache] delete failed to unlink cache file:', filename, err);
     }
     return this.keyToFilename.delete(key);
   }
@@ -261,8 +266,9 @@ export class L2DiskCache {
     for (const filename of Array.from(this.keyToFilename.values())) {
       try {
         unlinkSync(join(this.cacheDir, filename));
-      } catch {
+      } catch (err) {
         // 忽略
+        console.warn('[cache] clear failed to unlink cache file:', filename, err);
       }
     }
     this.keyToFilename.clear();

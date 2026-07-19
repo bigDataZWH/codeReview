@@ -39,6 +39,9 @@ export type {
   EstimateTokenCostInput,
 } from './token-optimizer.js';
 
+// token-counter (Task 18：精确 Token 估算，纯 JS 实现)
+export { countTokens } from './token-counter.js';
+
 // mcp-adapter
 export { getReviewContext, getReviewContextWithCache, getImpactRadius, isMCPAvailable, formatMCPContext, _resetMCPContextCache } from './mcp-adapter.js';
 
@@ -56,7 +59,7 @@ export { slugify, truncateString, isCFile, isCppFile, isTestFile, isGeneratedFil
 export { formatFindingMarkdown, formatFindingsMarkdown, formatFindingsJSON } from './format.js';
 
 // validation
-export { validateFinding, validatePipelineConfig } from './validation.js';
+export { validateFinding, validatePipelineConfig, validatePipelineConfigWithWarnings } from './validation.js';
 
 // constants
 export { DEFAULT_FILTER_CONFIG, DEFAULT_BUNDLE_CONFIG, SEVERITY_ORDER, MAX_DIFF_SIZE, HIGH_CONFIDENCE_THRESHOLD, DEFAULT_IOU_THRESHOLD, LARGE_PR_THRESHOLD, DEFAULT_BATCH_SIZE } from './constants.js';

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -238,6 +238,7 @@ describe('L2DiskCache', () => {
   });
 
   it('文件损坏时 get 返回 undefined', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     cache.set('broken', 'v');
     // 找到对应文件并破坏内容
     const files = cache.keys();
@@ -246,6 +247,7 @@ describe('L2DiskCache', () => {
       writeFileSync(file, 'not json {', 'utf8');
     }
     expect(cache.get('broken')).toBeUndefined();
+    warnSpy.mockRestore();
   });
 });
 
@@ -541,5 +543,94 @@ describe('类型导出', () => {
     const stats: HitStats = { hits: 1, misses: 0, total: 1, hitRate: 1 };
     expect(stats.hits).toBe(1);
     expect(stats.hitRate).toBe(1);
+  });
+});
+
+// ==================== Task 16: 静默 catch 日志校验 ====================
+
+describe('L2DiskCache 静默 catch 日志', () => {
+  let dir: string;
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cache-catch-'));
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('loadIndex readdirSync 失败时记录 warn 日志', () => {
+    // 用一个普通文件路径作为 cacheDir，触发 readdirSync ENOTDIR
+    const filePath = join(dir, 'not-a-dir');
+    writeFileSync(filePath, 'I am a file', 'utf8');
+    // existsSync 返回 true（文件存在），所以会走 loadIndex 分支
+    const cache = new L2DiskCache({ cacheDir: filePath });
+    // 未抛错即可
+    expect(cache.size()).toBe(0);
+    // 应当记录 warn 日志，且包含 [cache] 前缀
+    expect(warnSpy).toHaveBeenCalled();
+    const allCalls = warnSpy.mock.calls.map((c) => String(c[0]));
+    expect(allCalls.some((s) => s.includes('[cache]'))).toBe(true);
+  });
+
+  it('loadIndex 读取损坏 JSON 文件时记录 warn 日志', () => {
+    // 在目录中放一个损坏的 .json 文件
+    writeFileSync(join(dir, 'broken.json'), 'not-json {{{', 'utf8');
+    const cache = new L2DiskCache({ cacheDir: dir });
+    expect(cache.size()).toBe(0);
+    expect(warnSpy).toHaveBeenCalled();
+    const allCalls = warnSpy.mock.calls.map((c) => String(c[0]));
+    expect(allCalls.some((s) => s.includes('[cache]'))).toBe(true);
+  });
+
+  it('get 读取损坏 JSON 文件时记录 warn 日志', () => {
+    const cache = new L2DiskCache({ cacheDir: dir });
+    cache.set('broken', 'v');
+    // 破坏文件内容
+    const file = (cache as any).keyToFilePath('broken');
+    writeFileSync(file, 'not json {', 'utf8');
+    expect(cache.get('broken')).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalled();
+    const allCalls = warnSpy.mock.calls.map((c) => String(c[0]));
+    expect(allCalls.some((s) => s.includes('[cache]'))).toBe(true);
+  });
+
+  it('has 读取损坏 JSON 文件时记录 warn 日志', () => {
+    const cache = new L2DiskCache({ cacheDir: dir });
+    cache.set('broken', 'v');
+    const file = (cache as any).keyToFilePath('broken');
+    writeFileSync(file, 'not json {', 'utf8');
+    expect(cache.has('broken')).toBe(false);
+    expect(warnSpy).toHaveBeenCalled();
+    const allCalls = warnSpy.mock.calls.map((c) => String(c[0]));
+    expect(allCalls.some((s) => s.includes('[cache]'))).toBe(true);
+  });
+
+  it('delete unlinkSync 失败时记录 warn 日志', () => {
+    const cache = new L2DiskCache({ cacheDir: dir });
+    cache.set('ghost', 'v');
+    // 先手动从磁盘删除文件，使 unlinkSync 抛错
+    const file = (cache as any).keyToFilePath('ghost');
+    rmSync(file, { force: true });
+    // delete 仍应返回 true（keyToFilename 删除成功）
+    expect(cache.delete('ghost')).toBe(true);
+    expect(warnSpy).toHaveBeenCalled();
+    const allCalls = warnSpy.mock.calls.map((c) => String(c[0]));
+    expect(allCalls.some((s) => s.includes('[cache]'))).toBe(true);
+  });
+
+  it('clear unlinkSync 失败时记录 warn 日志', () => {
+    const cache = new L2DiskCache({ cacheDir: dir });
+    cache.set('ghost', 'v');
+    const file = (cache as any).keyToFilePath('ghost');
+    rmSync(file, { force: true });
+    cache.clear();
+    expect(cache.size()).toBe(0);
+    expect(warnSpy).toHaveBeenCalled();
+    const allCalls = warnSpy.mock.calls.map((c) => String(c[0]));
+    expect(allCalls.some((s) => s.includes('[cache]'))).toBe(true);
   });
 });

@@ -13,8 +13,21 @@
 // - 分批处理支持顺序/并行两种模式，并行模式可大幅缩短大 PR 处理耗时
 
 import { StateStore, type Session, type SessionStatus } from './state.js';
-import type { Finding, FileDiff, MCPContextResult, FileBundle } from './types.js';
+import type {
+  Finding,
+  FileDiff,
+  MCPContextResult,
+  FileBundle,
+  Rule,
+  RuleAnnotation,
+  LLMProviderConfig,
+  BlastRadiusItem,
+} from './types.js';
 import { DEFAULT_BATCH_SIZE } from './constants.js';
+import { matchRules } from './rule-engine.js';
+import { bundleFiles } from './file-filter.js';
+import { callLLM } from './ai-reflection.js';
+import { getImpactRadius } from './mcp-adapter.js';
 
 // ============================================================
 // 审查会话管理器
@@ -436,17 +449,113 @@ export interface BuildReviewDagOptions {
   includeAIReviewer?: boolean;
   /** 是否包含影响分析节点（默认根据文件数动态判断） */
   includeImpactAnalyzer?: boolean;
+  /** 规则列表（rule-engine 节点使用） */
+  rules?: Rule[];
+  /** LLM 配置（ai-reviewer 节点使用，未配置时跳过 LLM 调用） */
+  llmConfig?: LLMProviderConfig;
+  /** 已构建的 review prompt（ai-reviewer 节点使用，为空时跳过 LLM 调用） */
+  reviewPrompt?: string;
+  /** 依赖注入：规则匹配函数（默认 matchRules） */
+  matchRulesFn?: typeof matchRules;
+  /** 依赖注入：LLM 调用函数（默认 callLLM） */
+  callLLMFn?: typeof callLLM;
+  /** 依赖注入：影响半径查询函数（默认 getImpactRadius） */
+  getImpactRadiusFn?: typeof getImpactRadius;
+}
+
+/**
+ * 将 RuleAnnotation 转换为 Finding。
+ */
+function annotationToFinding(bundle: FileBundle, ann: RuleAnnotation): Finding {
+  return {
+    file: bundle.primary.path,
+    line: ann.line ?? 0,
+    severity: ann.severity,
+    category: ann.category,
+    message: ann.message,
+    source: 'rule',
+    ruleId: ann.ruleId,
+    confidence: 1.0,
+  };
+}
+
+/**
+ * 将 BlastRadiusItem 转换为 Finding。
+ */
+function blastRadiusItemToFinding(item: BlastRadiusItem): Finding {
+  return {
+    file: item.path,
+    line: 0,
+    severity: 'info',
+    category: 'impact',
+    message: `Impact: ${item.type} - ${item.relation}`,
+    source: 'rule',
+    confidence: 1.0,
+  };
+}
+
+/**
+ * 解析 LLM 响应为 Finding[]。
+ *
+ * 支持以下响应格式：
+ * - JSON 数组：`[{"file": "...", "line": 10, ...}, ...]`
+ * - markdown 代码块包裹的 JSON 数组：```` ```json [...] ``` ````
+ *
+ * 解析失败或非数组时返回空数组。所有生成的 Finding source='ai'。
+ */
+function parseFindingsFromLLMResponse(response: string): Finding[] {
+  if (!response || response.trim() === '') return [];
+
+  let text = response.trim();
+  // 提取 markdown 代码块中的 JSON
+  const codeBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (codeBlockMatch) {
+    text = codeBlockMatch[1].trim();
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    console.warn('[orchestrator] parseFindingsFromLLMResponse failed to parse JSON:', err);
+    return [];
+  }
+
+  if (!Array.isArray(parsed)) return [];
+
+  const findings: Finding[] = [];
+  for (const item of parsed) {
+    if (!item || typeof item !== 'object') continue;
+    const obj = item as Record<string, unknown>;
+    if (typeof obj.file !== 'string') continue;
+    findings.push({
+      file: obj.file,
+      line: typeof obj.line === 'number' ? obj.line : 0,
+      severity: (obj.severity as Finding['severity']) ?? 'medium',
+      category: typeof obj.category === 'string' ? obj.category : 'general',
+      message: typeof obj.message === 'string' ? obj.message : '',
+      source: 'ai',
+      confidence: typeof obj.confidence === 'number' ? obj.confidence : 0.5,
+      ...(typeof obj.suggestion === 'string' ? { suggestion: obj.suggestion } : {}),
+      ...(typeof obj.ruleId === 'string' ? { ruleId: obj.ruleId } : {}),
+    });
+  }
+  return findings;
 }
 
 /**
  * 根据变更规模构建审查 DAG。
  *
  * 默认包含：
- * - rule-engine：规则匹配（无依赖）
- * - ai-reviewer：AI 审查（依赖 rule-engine，可通过 includeAIReviewer=false 跳过）
- * - impact-analyzer：影响分析（依赖 rule-engine，仅大变更时包含，可通过 includeImpactAnalyzer 控制）
+ * - rule-engine：规则匹配（无依赖），调用 matchRules 将 RuleAnnotation 转为 source='rule' 的 findings
+ * - ai-reviewer：AI 审查（依赖 rule-engine），调用 callLLM 解析响应为 source='ai' 的 findings；
+ *   未配置 llmConfig / reviewPrompt 时返回空数组；LLM 失败时降级返回空数组
+ * - impact-analyzer：影响分析（依赖 rule-engine），调用 getImpactRadius 将 BlastRadiusItem 转为 findings；
+ *   仅大变更时包含，可通过 includeImpactAnalyzer 控制；失败时降级返回空数组
  *
- * handler 返回空数组占位，由调用方按需替换为真实处理器。
+ * 通过 options 注入 deps 函数（matchRulesFn / callLLMFn / getImpactRadiusFn）可在测试中替换为 mock。
+ * 不传 options 时行为：rule-engine 返回空 findings（无 rules），ai-reviewer 跳过（无 llmConfig），
+ * impact-analyzer 调用真实 getImpactRadius（MCP 不可用时返回空）。
  */
 export function buildReviewDag(
   diffs: FileDiff[],
@@ -456,12 +565,32 @@ export function buildReviewDag(
   const includeAIReviewer = options?.includeAIReviewer ?? true;
   const includeImpactAnalyzer = options?.includeImpactAnalyzer ?? !shouldSkipImpactAnalysis(diffs.length, threshold);
 
+  // 依赖注入：默认调用真实函数
+  const matchRulesFn = options?.matchRulesFn ?? matchRules;
+  const callLLMFn = options?.callLLMFn ?? callLLM;
+  const getImpactRadiusFn = options?.getImpactRadiusFn ?? getImpactRadius;
+  const rules = options?.rules ?? [];
+  const llmConfig = options?.llmConfig;
+  const reviewPrompt = options?.reviewPrompt ?? '';
+
   const nodes: DagNode<Finding[]>[] = [
     {
       id: 'rule-engine',
       agentType: 'rule-engine',
       dependencies: [],
-      handler: async () => [],
+      handler: async (ctx) => {
+        // 优先使用 ctx.diffs（executeDag 传入），为空时回退到闭包 diffs
+        const diffsForMatch = ctx.diffs.length > 0 ? ctx.diffs : diffs;
+        const bundles = bundleFiles(diffsForMatch);
+        const findings: Finding[] = [];
+        for (const bundle of bundles) {
+          const annotations = matchRulesFn(bundle, rules);
+          for (const ann of annotations) {
+            findings.push(annotationToFinding(bundle, ann));
+          }
+        }
+        return findings;
+      },
     },
   ];
 
@@ -470,7 +599,16 @@ export function buildReviewDag(
       id: 'ai-reviewer',
       agentType: 'ai-reviewer',
       dependencies: ['rule-engine'],
-      handler: async () => [],
+      handler: async () => {
+        if (!llmConfig || !reviewPrompt) return [];
+        try {
+          const response = await callLLMFn(reviewPrompt, llmConfig);
+          return parseFindingsFromLLMResponse(response);
+        } catch (err) {
+          console.warn('ai-reviewer LLM call failed, returning empty:', err);
+          return [];
+        }
+      },
     });
   }
 
@@ -479,7 +617,16 @@ export function buildReviewDag(
       id: 'impact-analyzer',
       agentType: 'impact-analyzer',
       dependencies: ['rule-engine'],
-      handler: async () => [],
+      handler: async () => {
+        try {
+          const filePaths = diffs.map((d) => d.path).filter(Boolean);
+          const items = await getImpactRadiusFn(filePaths);
+          return items.map(blastRadiusItemToFinding);
+        } catch (err) {
+          console.warn('impact-analyzer failed, returning empty:', err);
+          return [];
+        }
+      },
     });
   }
 
@@ -595,7 +742,8 @@ export async function getReviewContextWithFallback(
   try {
     const context = await options.mcpOperation();
     return { context, fallbackUsed: false, fullTextFiles };
-  } catch {
+  } catch (err) {
+    console.warn('[orchestrator] getReviewContextWithFallback MCP operation failed, falling back:', err);
     return { context: null, fallbackUsed: true, fullTextFiles };
   }
 }

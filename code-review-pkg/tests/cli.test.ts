@@ -28,6 +28,18 @@ interface TestState {
   exitError: Error | null;
   stdout: string[];
   stderr: string[];
+  // init 命令状态
+  initMode: boolean;
+  readlineAnswers: string[];
+  readlineError: Error | null;
+  writeFilesError: Error | null;
+  existingFiles: Set<string>;
+  generateConfigCalls: unknown[][];
+  initWriteCalls: Array<{ path: string; content: string }>;
+  // --execute 模式状态
+  callLLMCalls: Array<{ prompt: string; config: unknown }>;
+  llmResponse: string | null;
+  llmError: Error | null;
 }
 
 const testState: TestState = {
@@ -35,6 +47,16 @@ const testState: TestState = {
   exitError: null,
   stdout: [],
   stderr: [],
+  initMode: false,
+  readlineAnswers: [],
+  readlineError: null,
+  writeFilesError: null,
+  existingFiles: new Set(),
+  generateConfigCalls: [],
+  initWriteCalls: [],
+  callLLMCalls: [],
+  llmResponse: null,
+  llmError: null,
 };
 
 // 必须 hoist 的 mock：拦截 node:fs
@@ -50,6 +72,67 @@ vi.mock('node:fs', async (importOriginal) => {
       // 其他路径走真实实现
       return (actual.readFileSync as (...a: unknown[]) => unknown)(...args);
     }),
+    // init 命令相关：仅在 initMode 时拦截，避免影响其他测试
+    writeFileSync: vi.fn((...args: unknown[]) => {
+      if (testState.initMode) {
+        if (testState.writeFilesError) throw testState.writeFilesError;
+        testState.initWriteCalls.push({
+          path: String(args[0]),
+          content: String(args[1]),
+        });
+        return undefined;
+      }
+      return (actual.writeFileSync as (...a: unknown[]) => unknown)(...args);
+    }),
+    mkdirSync: vi.fn((...args: unknown[]) => {
+      if (testState.initMode) return undefined;
+      return (actual.mkdirSync as (...a: unknown[]) => unknown)(...args);
+    }),
+    existsSync: vi.fn((...args: unknown[]) => {
+      if (testState.initMode) {
+        return testState.existingFiles.has(String(args[0]));
+      }
+      return (actual.existsSync as (...a: unknown[]) => unknown)(...args);
+    }),
+  };
+});
+
+// 拦截 node:readline/promises，模拟用户交互输入
+vi.mock('node:readline/promises', () => ({
+  createInterface: vi.fn(() => ({
+    question: vi.fn(async (_prompt: string) => {
+      if (testState.readlineError) throw testState.readlineError;
+      return testState.readlineAnswers.shift() ?? '';
+    }),
+    close: vi.fn(),
+  })),
+}));
+
+// 拦截 init-wizard.js 的 generateConfig，记录调用参数（仍走真实实现）
+vi.mock('../src/init-wizard.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/init-wizard.js')>();
+  return {
+    ...actual,
+    generateConfig: vi.fn((...args: unknown[]) => {
+      testState.generateConfigCalls.push(args);
+      return actual.generateConfig(...(args as Parameters<typeof actual.generateConfig>));
+    }),
+  };
+});
+
+// 拦截 ai-reflection.js 的 callLLM，记录调用并返回 mock 响应
+vi.mock('../src/ai-reflection.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/ai-reflection.js')>();
+  return {
+    ...actual,
+    callLLM: vi.fn(async (...args: unknown[]) => {
+      testState.callLLMCalls.push({
+        prompt: String(args[0]),
+        config: args[1],
+      });
+      if (testState.llmError) throw testState.llmError;
+      return testState.llmResponse ?? '[]';
+    }),
   };
 });
 
@@ -58,14 +141,45 @@ async function loadCli(opts: {
   argv: string[];
   stdin?: string;
   env?: Record<string, string | undefined>;
-}): Promise<{ stdout: string[]; stderr: string[]; exitCode: number | null }> {
-  const { argv, stdin = '', env = {} } = opts;
+  init?: {
+    answers?: string[];
+    readlineError?: Error | null;
+    writeFilesError?: Error | null;
+    existingFiles?: string[];
+  };
+  llm?: {
+    response?: string | null;
+    error?: Error | null;
+  };
+}): Promise<{
+  stdout: string[];
+  stderr: string[];
+  exitCode: number | null;
+  generateConfigCalls: unknown[][];
+  writeCalls: Array<{ path: string; content: string }>;
+  callLLMCalls: Array<{ prompt: string; config: unknown }>;
+}> {
+  const { argv, stdin = '', env = {}, init, llm } = opts;
 
   // 重置测试状态
   testState.stdin = stdin;
   testState.exitError = null;
   testState.stdout = [];
   testState.stderr = [];
+
+  // init 命令状态
+  testState.initMode = !!init;
+  testState.readlineAnswers = init?.answers ? [...init.answers] : [];
+  testState.readlineError = init?.readlineError ?? null;
+  testState.writeFilesError = init?.writeFilesError ?? null;
+  testState.existingFiles = new Set(init?.existingFiles ?? []);
+  testState.generateConfigCalls = [];
+  testState.initWriteCalls = [];
+
+  // --execute 模式状态
+  testState.callLLMCalls = [];
+  testState.llmResponse = llm?.response ?? null;
+  testState.llmError = llm?.error ?? null;
 
   // 保存原始状态
   const origArgv = process.argv;
@@ -107,6 +221,9 @@ async function loadCli(opts: {
       stdout: [...testState.stdout],
       stderr: [...testState.stderr],
       exitCode: null,
+      generateConfigCalls: [...testState.generateConfigCalls],
+      writeCalls: [...testState.initWriteCalls],
+      callLLMCalls: [...testState.callLLMCalls],
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -116,6 +233,9 @@ async function loadCli(opts: {
         stdout: [...testState.stdout],
         stderr: [...testState.stderr],
         exitCode: parseInt(match[1], 10),
+        generateConfigCalls: [...testState.generateConfigCalls],
+        writeCalls: [...testState.initWriteCalls],
+        callLLMCalls: [...testState.callLLMCalls],
       };
     }
     throw err;
@@ -278,6 +398,108 @@ index 3..4 100644
       const prompt = stdout.join('\n');
       expect(prompt).toContain('影响');
       expect(prompt).toContain('src/app.ts');
+    });
+  });
+
+  // ==================== review 命令 with --execute ====================
+  describe('review command with --execute flag', () => {
+    const LLM_CONFIG_JSON = '{"provider":"openai","apiKey":"test","model":"gpt-4"}';
+    const MOCK_FINDINGS = [
+      {
+        file: 'src/app.ts',
+        line: 3,
+        severity: 'high',
+        category: 'style',
+        message: 'Avoid console.log in production code',
+        confidence: 0.9,
+        source: 'ai',
+      },
+    ];
+
+    it('calls LLM and outputs findings JSON when --execute is provided', async () => {
+      const { stdout, exitCode, callLLMCalls } = await loadCli({
+        argv: ['review', '--execute', '--llm-config', LLM_CONFIG_JSON],
+        stdin: SAMPLE_DIFF,
+        llm: { response: JSON.stringify(MOCK_FINDINGS) },
+      });
+
+      expect(exitCode).toBeNull();
+      // callLLM 被调用一次
+      expect(callLLMCalls.length).toBe(1);
+      // 第二个参数是 LLMProviderConfig
+      expect(callLLMCalls[0].config).toEqual({
+        provider: 'openai',
+        apiKey: 'test',
+        model: 'gpt-4',
+      });
+      // 第一个参数是 prompt（非空字符串，包含 diff 信息）
+      expect(typeof callLLMCalls[0].prompt).toBe('string');
+      expect(callLLMCalls[0].prompt.length).toBeGreaterThan(0);
+      expect(callLLMCalls[0].prompt).toContain('src/app.ts');
+
+      // 输出可以 JSON.parse，且包含 findings
+      const output = stdout.join('\n');
+      const parsed = JSON.parse(output);
+      expect(Array.isArray(parsed)).toBe(true);
+      expect(parsed.length).toBe(1);
+      expect(parsed[0].file).toBe('src/app.ts');
+      expect(parsed[0].severity).toBe('high');
+    });
+
+    it('outputs prompt only when --execute is NOT provided (backward compat)', async () => {
+      const { stdout, exitCode, callLLMCalls } = await loadCli({
+        argv: ['review'],
+        stdin: SAMPLE_DIFF,
+        llm: { response: JSON.stringify(MOCK_FINDINGS) },
+      });
+
+      expect(exitCode).toBeNull();
+      // callLLM 未被调用
+      expect(callLLMCalls.length).toBe(0);
+      // 输出包含 prompt 文本，不是 JSON 数组
+      const prompt = stdout.join('\n');
+      expect(prompt).toContain('Code Review');
+      expect(prompt).toContain('src/app.ts');
+      // 不应该是合法的 JSON 数组（prompt 是文本）
+      expect(() => JSON.parse(prompt)).toThrow();
+    });
+
+    it('errors when --execute is provided but --llm-config is missing', async () => {
+      const { stderr, exitCode, callLLMCalls } = await loadCli({
+        argv: ['review', '--execute'],
+        stdin: SAMPLE_DIFF,
+      });
+
+      expect(exitCode).toBe(1);
+      expect(stderr.some((s) => s.includes('LLM config required'))).toBe(true);
+      // callLLM 未被调用
+      expect(callLLMCalls.length).toBe(0);
+    });
+
+    it('handles LLM call failure gracefully', async () => {
+      const { stderr, exitCode, callLLMCalls } = await loadCli({
+        argv: ['review', '--execute', '--llm-config', LLM_CONFIG_JSON],
+        stdin: SAMPLE_DIFF,
+        llm: { error: new Error('LLM API error: 503 Service Unavailable') },
+      });
+
+      expect(exitCode).toBe(1);
+      // callLLM 被调用但抛出错误
+      expect(callLLMCalls.length).toBe(1);
+      expect(stderr.some((s) => s.includes('LLM call failed'))).toBe(true);
+      expect(stderr.some((s) => s.includes('503 Service Unavailable'))).toBe(true);
+    });
+
+    it('errors when --llm-config is invalid JSON', async () => {
+      const { stderr, exitCode, callLLMCalls } = await loadCli({
+        argv: ['review', '--execute', '--llm-config', '{not valid json'],
+        stdin: SAMPLE_DIFF,
+      });
+
+      expect(exitCode).toBe(1);
+      expect(stderr.some((s) => s.includes('valid JSON'))).toBe(true);
+      // callLLM 未被调用
+      expect(callLLMCalls.length).toBe(0);
     });
   });
 
@@ -484,6 +706,80 @@ index 3..4 100644
       const help = stdout.join('\n');
       expect(help).toContain('code-review');
       expect(help).toContain('Usage');
+    });
+  });
+
+  // ==================== init 命令 ====================
+  describe('init 命令', () => {
+    it('用户完成向导后生成配置文件并写盘', async () => {
+      // 模拟用户依次输入：1.typescript / 2.standard / y.启用安全 / 2.github-actions
+      const { stdout, exitCode, generateConfigCalls, writeCalls } = await loadCli({
+        argv: ['init'],
+        init: {
+          answers: ['1', '2', 'y', '2'],
+        },
+      });
+
+      expect(exitCode).toBeNull();
+
+      // generateConfig 被调用一次，参数包含用户选择
+      expect(generateConfigCalls.length).toBe(1);
+      expect(generateConfigCalls[0][0]).toEqual({
+        language: 'typescript',
+        reviewStrength: 'standard',
+        securityReview: true,
+        deployment: 'github-actions',
+      });
+
+      // opencode.jsonc 被写入
+      const openCodeWrite = writeCalls.find((c) => c.path.endsWith('opencode.jsonc'));
+      expect(openCodeWrite).toBeDefined();
+      // github-actions 部署应生成 workflow 文件
+      const workflowWrite = writeCalls.find((c) => c.path.includes('code-review.yml'));
+      expect(workflowWrite).toBeDefined();
+
+      // 控制台输出 success message
+      const out = stdout.join('\n');
+      expect(out).toContain('初始化完成');
+      expect(out).toContain('opencode.jsonc');
+    });
+
+    it('用户取消（Ctrl+C 模拟 readline 抛错）时退出码 1', async () => {
+      const { stderr, exitCode, generateConfigCalls } = await loadCli({
+        argv: ['init'],
+        init: {
+          answers: [],
+          readlineError: new Error('SIGINT'),
+        },
+      });
+
+      expect(exitCode).toBe(1);
+      // 向导被中断，generateConfig 不应被调用
+      expect(generateConfigCalls.length).toBe(0);
+      expect(stderr.some((s) => s.includes('初始化失败'))).toBe(true);
+    });
+
+    it('writeFile 抛错时被捕获并退出码 1', async () => {
+      const { stderr, exitCode, generateConfigCalls } = await loadCli({
+        argv: ['init'],
+        init: {
+          answers: ['1', '2', 'y', '1'],
+          writeFilesError: new Error('EACCES: permission denied'),
+        },
+      });
+
+      // 向导已完成，generateConfig 已被调用
+      expect(generateConfigCalls.length).toBe(1);
+      expect(generateConfigCalls[0][0]).toMatchObject({
+        language: 'typescript',
+        reviewStrength: 'standard',
+        securityReview: true,
+        deployment: 'cli',
+      });
+      // 写盘失败被捕获，退出码 1
+      expect(exitCode).toBe(1);
+      expect(stderr.some((s) => s.includes('初始化失败'))).toBe(true);
+      expect(stderr.some((s) => s.includes('EACCES'))).toBe(true);
     });
   });
 });

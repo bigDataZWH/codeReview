@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { runPipeline, applyFindings, runPipelineWithMiddleware, runPipelineFromFile, runSecurityPipeline } from '../src/pipeline.js';
-import type { PipelineConfig, PipelineMiddleware, Finding } from '../src/types.js';
+import { runPipeline, applyFindings, runPipelineWithMiddleware, runPipelineFromFile, runSecurityPipeline, runPipelineBatched } from '../src/pipeline.js';
+import type { PipelineConfig, PipelineMiddleware, Finding, FileDiff } from '../src/types.js';
 
 // ── 测试用 diff 文本 ──
 
@@ -269,6 +269,201 @@ describe('runPipelineWithMiddleware', () => {
   });
 });
 
+// ── runPipelineWithMiddleware hooks: afterParse / afterFilter ──
+
+describe('runPipelineWithMiddleware hooks', () => {
+  // ── afterParse 钩子 ──
+
+  it('calls afterParse hook with parsed FileDiff[] and uses returned value', async () => {
+    const diffText = `diff --git a/file.ts b/file.ts
+new file mode 100644
+index 0000000..1234567
+--- /dev/null
++++ b/file.ts
+@@ -0,0 +1,3 @@
++console.log('hello');
++console.log('world');
++console.log('test');
+`;
+    const config: PipelineConfig = { filter: {} };
+
+    let receivedDiffs: FileDiff[] | null = null;
+    const middleware: PipelineMiddleware = {
+      name: 'test-afterParse',
+      afterParse: (diffs) => {
+        receivedDiffs = diffs;
+        return diffs; // 透传
+      },
+    };
+
+    const result = await runPipelineWithMiddleware(diffText, config, [middleware]);
+
+    expect(receivedDiffs).not.toBeNull();
+    expect(receivedDiffs!.length).toBeGreaterThan(0);
+    expect(receivedDiffs![0].path).toBe('file.ts');
+    // 透传时最终结果仍包含该文件
+    expect(result.filteredDiffs).toHaveLength(1);
+    expect(result.filteredDiffs[0].path).toBe('file.ts');
+  });
+
+  it('uses afterParse returned value for subsequent filter step', async () => {
+    const config: PipelineConfig = { filter: {} };
+
+    const middleware: PipelineMiddleware = {
+      name: 'empty-afterParse',
+      afterParse: () => [], // 返回空数组
+    };
+
+    const result = await runPipelineWithMiddleware(SIMPLE_DIFF, config, [middleware]);
+
+    // afterParse 返回空数组 → filter 输入为空 → filteredDiffs 为空
+    expect(result.filteredDiffs).toEqual([]);
+    expect(result.bundles).toEqual([]);
+  });
+
+  it('afterParse can inject additional FileDiff entries', async () => {
+    const config: PipelineConfig = { filter: {} };
+
+    const injectedDiff: FileDiff = {
+      path: 'injected.ts',
+      status: 'added',
+      hunks: [
+        {
+          oldStart: 0,
+          oldCount: 0,
+          newStart: 1,
+          newCount: 1,
+          header: '@@ -0,0 +1,1 @@',
+          lines: [
+            { type: 'add', content: '// injected by middleware' },
+          ],
+        },
+      ],
+    };
+
+    const middleware: PipelineMiddleware = {
+      name: 'inject-afterParse',
+      afterParse: (diffs) => [...diffs, injectedDiff],
+    };
+
+    const result = await runPipelineWithMiddleware(SIMPLE_DIFF, config, [middleware]);
+
+    // 注入的文件应出现在 filteredDiffs 中
+    const paths = result.filteredDiffs.map((d) => d.path);
+    expect(paths).toContain('injected.ts');
+    expect(paths).toContain('src/app.ts');
+  });
+
+  // ── afterFilter 钩子 ──
+
+  it('calls afterFilter hook with filtered FileDiff[] and uses returned value', async () => {
+    const config: PipelineConfig = { filter: {} };
+
+    let receivedDiffs: FileDiff[] | null = null;
+    const middleware: PipelineMiddleware = {
+      name: 'test-afterFilter',
+      afterFilter: (diffs) => {
+        receivedDiffs = diffs;
+        return diffs; // 透传
+      },
+    };
+
+    const result = await runPipelineWithMiddleware(SIMPLE_DIFF, config, [middleware]);
+
+    expect(receivedDiffs).not.toBeNull();
+    expect(receivedDiffs!.length).toBeGreaterThan(0);
+    expect(receivedDiffs![0].path).toBe('src/app.ts');
+    // 透传时最终结果仍包含该文件
+    expect(result.filteredDiffs).toHaveLength(1);
+  });
+
+  it('uses afterFilter returned value for subsequent bundle step', async () => {
+    const config: PipelineConfig = { filter: {} };
+
+    const middleware: PipelineMiddleware = {
+      name: 'empty-afterFilter',
+      afterFilter: () => [], // 返回空数组
+    };
+
+    const result = await runPipelineWithMiddleware(SIMPLE_DIFF, config, [middleware]);
+
+    // afterFilter 返回空数组 → bundle 输入为空 → bundles 为空
+    expect(result.filteredDiffs).toEqual([]);
+    expect(result.bundles).toEqual([]);
+    expect(result.annotatedBundles).toEqual([]);
+  });
+
+  it('afterFilter can remove specific files from subsequent bundle step', async () => {
+    // 使用多文件 diff，afterFilter 移除其中一个文件
+    const config: PipelineConfig = { filter: {} };
+
+    const middleware: PipelineMiddleware = {
+      name: 'remove-util-afterFilter',
+      afterFilter: (diffs) => diffs.filter((d) => !d.path.endsWith('util.ts')),
+    };
+
+    const result = await runPipelineWithMiddleware(MULTI_FILE_DIFF, config, [middleware]);
+
+    // 只剩 app.ts
+    expect(result.filteredDiffs).toHaveLength(1);
+    expect(result.filteredDiffs[0].path).toBe('src/app.ts');
+    expect(result.bundles).toHaveLength(1);
+    expect(result.bundles[0].primary.path).toBe('src/app.ts');
+  });
+
+  // ── 多中间件组合 ──
+
+  it('applies multiple middlewares in order: afterParse → afterFilter → afterBuild', async () => {
+    const config: PipelineConfig = { filter: {} };
+    const callOrder: string[] = [];
+
+    const middlewares: PipelineMiddleware[] = [
+      {
+        name: 'mw1',
+        afterParse: (diffs) => {
+          callOrder.push('mw1.afterParse');
+          return diffs;
+        },
+        afterFilter: (diffs) => {
+          callOrder.push('mw1.afterFilter');
+          return diffs;
+        },
+        afterBuild: (result) => {
+          callOrder.push('mw1.afterBuild');
+          return result;
+        },
+      },
+      {
+        name: 'mw2',
+        afterParse: (diffs) => {
+          callOrder.push('mw2.afterParse');
+          return diffs;
+        },
+        afterFilter: (diffs) => {
+          callOrder.push('mw2.afterFilter');
+          return diffs;
+        },
+        afterBuild: (result) => {
+          callOrder.push('mw2.afterBuild');
+          return result;
+        },
+      },
+    ];
+
+    await runPipelineWithMiddleware(SIMPLE_DIFF, config, middlewares);
+
+    // 校验调用顺序：先全部 afterParse，再全部 afterFilter，最后全部 afterBuild
+    expect(callOrder).toEqual([
+      'mw1.afterParse',
+      'mw2.afterParse',
+      'mw1.afterFilter',
+      'mw2.afterFilter',
+      'mw1.afterBuild',
+      'mw2.afterBuild',
+    ]);
+  });
+});
+
 // ── runSecurityPipeline ──
 
 describe('runSecurityPipeline', () => {
@@ -324,6 +519,102 @@ describe('dry-run mode', () => {
     const config: PipelineConfig = { filter: {}, dryRun: true };
     const result = await runPipeline(SIMPLE_DIFF, config);
     expect(result.prompt).toContain('Code Review');
+    expect(result.findings).toEqual([]);
+  });
+});
+
+// ── Task 7: runPipelineBatched with real processFn ──
+
+describe('runPipelineBatched with real processFn', () => {
+  // 1. 处理含规则匹配的 diff 时返回非空 findings
+  it('produces non-empty findings when diff matches rules', async () => {
+    // diff 包含 console.log，规则 'no-console' 应匹配
+    const diffText = `diff --git a/file.ts b/file.ts
+new file mode 100644
+--- /dev/null
++++ b/file.ts
+@@ -0,0 +1,2 @@
++console.log('hello world');
++console.log('test');
+`;
+    const config: PipelineConfig = {
+      filter: { ignorePatterns: [], includePatterns: [], maxPatchLength: 10000 },
+      rules: [
+        {
+          id: 'no-console',
+          name: 'No Console',
+          severity: 'low',
+          category: 'quality',
+          patterns: [{ type: 'contains_any', items: ['console.log'], message: '不应使用 console.log' }],
+        },
+      ],
+    };
+    const result = await runPipelineBatched(diffText, config);
+    expect(result.findings.length).toBeGreaterThan(0);
+    expect(result.findings.some(f => f.ruleId === 'no-console')).toBe(true);
+    expect(result.findings.every(f => f.source === 'rule')).toBe(true);
+  });
+
+  // 2. findings 经过 correctLineLocations 和 filterFalsePositives 后处理
+  // 使用 line_count_gt 规则：匹配时 annotation.line 为 undefined，finding 初始 line=0
+  // correctLineLocations 应将其修正为 hunk 起始行 1
+  // 自定义 FP 规则匹配 line===1 的 finding，应被 filterFalsePositives 过滤
+  // 若 correctLineLocations 未执行，line 仍为 0，FP 规则不匹配，finding 会保留
+  // 因此 findings 为空证明两个后处理步骤均执行
+  it('post-processes findings via correctLineLocations and filterFalsePositives', async () => {
+    const diffText = `diff --git a/file.ts b/file.ts
+new file mode 100644
+--- /dev/null
++++ b/file.ts
+@@ -0,0 +1,2 @@
++console.log('hello world');
++console.log('test');
+`;
+    const config: PipelineConfig = {
+      filter: {},
+      rules: [
+        {
+          id: 'too-many-changes',
+          name: 'Too Many Changes',
+          severity: 'medium',
+          category: 'quality',
+          patterns: [{ type: 'line_count_gt', threshold: 1, message: 'too many changes' }],
+        },
+      ],
+      falsePositiveRules: [
+        {
+          id: 'fp-line-1',
+          name: 'filter line 1',
+          match: (f) => f.line === 1,
+        },
+      ],
+    };
+    const result = await runPipelineBatched(diffText, config);
+    expect(result.findings.length).toBe(0);
+  });
+
+  // 3. 无规则匹配时返回空 findings（不应失败）
+  it('returns empty findings when no rules match', async () => {
+    const diffText = `diff --git a/file.ts b/file.ts
+new file mode 100644
+--- /dev/null
++++ b/file.ts
+@@ -0,0 +1,1 @@
++const x = 1;
+`;
+    const config: PipelineConfig = {
+      filter: {},
+      rules: [
+        {
+          id: 'no-console',
+          name: 'No Console',
+          severity: 'low',
+          category: 'quality',
+          patterns: [{ type: 'contains_any', items: ['console.log'], message: '不应使用 console.log' }],
+        },
+      ],
+    };
+    const result = await runPipelineBatched(diffText, config);
     expect(result.findings).toEqual([]);
   });
 });
