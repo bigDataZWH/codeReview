@@ -40,3 +40,9 @@ export const HIGH_CONFIDENCE_THRESHOLD = 0.85;
 
 /** 默认 IoU 去重阈值 */
 export const DEFAULT_IOU_THRESHOLD = 0.5;
+
+/** 迭代 5：大 PR 阈值，文件数 ≥ 此值时触发分批处理 */
+export const LARGE_PR_THRESHOLD = 30;
+
+/** 迭代 5：默认分批大小（每批文件数） */
+export const DEFAULT_BATCH_SIZE = 10;

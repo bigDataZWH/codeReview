@@ -1,0 +1,24 @@
+[
+  {
+    "id": "path-traversal-dotdot",
+    "name": "路径遍历 - ../ 拼接检测",
+    "severity": "high",
+    "category": "security",
+    "patterns": [
+      { "type": "regex", "pattern": "(path|filePath|filename|file)\\s*[:=].*\\.\\./", "message": "检测到 ../ 路径拼接，存在路径遍历风险，需校验并规范化路径" },
+      { "type": "regex", "pattern": "(join|resolve|concat|combine)\\s*\\([^)]*\\.\\./", "message": "路径拼接中包含 ../，需校验最终路径是否在允许范围内" },
+      { "type": "contains_any", "items": ["..\\", "../", "..%2f", "..%5c"], "message": "检测到路径遍历序列 ../，应拒绝或规范化" }
+    ]
+  },
+  {
+    "id": "path-traversal-user-input",
+    "name": "路径遍历 - 用户输入拼接到文件路径",
+    "severity": "high",
+    "category": "security",
+    "patterns": [
+      { "type": "regex", "pattern": "(readFile|writeFile|open|fopen|createReadStream|createWriteStream)\\s*\\([^)]*req\\.", "message": "文件操作直接使用请求参数构造路径，存在路径遍历风险" },
+      { "type": "regex", "pattern": "(readFile|writeFile|open|fopen)\\s*\\([^)]*\\+\\s*\\w+", "message": "文件路径通过字符串拼接构造，需校验输入防止路径遍历" },
+      { "type": "contains_any", "items": ["path.join(req.", "path.resolve(req.", "join(request.", "resolve(request."], "message": "将用户输入直接拼接到文件路径，存在路径遍历风险" }
+    ]
+  }
+]

@@ -1,5 +1,8 @@
 node_modules/
 dist/
+coverage/
 .code-review-graph/
 *.log
 .DS_Store
+.opencode-review-ignore.yaml
+.opencode-review-ignore.yml

@@ -18,6 +18,12 @@
       "model": "anthropic/claude-haiku-4-5",
       "prompt": "Analyze the blast radius of code changes. Identify all callers, callees, and test files affected by the changes. Provide a risk score from 0-10.",
       "tools": { "write": false, "edit": false }
+    },
+    "reflector": {
+      "description": "反思与置信度评估 Agent，对汇总的 findings 做统一置信度评估",
+      "model": "anthropic/claude-haiku-4-5",
+      "prompt": "You are a code review quality evaluator. Perform unified confidence assessment on aggregated findings from code-reviewer, security-reviewer and rule-based annotations. For each finding evaluate specificity, actionability, relevance and accuracy. Apply false-positive heuristics (DOS/rate-limit without exploit, memory-safety in non-C/C++, open redirect, @generated files, low-severity security in tests, TODO/FIXME, log-level/console.log suggestions). Respond with a JSON array only: [{\"id\": 0, \"confidence\": <0..1>}]. 1.0=true positive, 0.5=uncertain, 0.0=false positive. Do not modify files.",
+      "tools": { "write": false, "edit": false }
     }
   },
   "mcp": {

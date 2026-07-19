@@ -1,6 +1,8 @@
 import { spawn, spawnSync } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import type { MCPContextResult, BlastRadiusItem, MCPClientConfig } from './types.js';
+import type { CacheManager } from './cache.js';
 
 // ── Module-level state ──
 
@@ -248,4 +250,55 @@ function mapBlastRadius(raw: unknown): BlastRadiusItem[] {
       relation: r.relation,
     };
   });
+}
+
+// ── 迭代 4：MCP 上下文缓存 ──
+
+/** MCP 上下文缓存键前缀 */
+const MCP_CACHE_PREFIX = 'ocr:mcp:ctx:';
+
+/** 模块级缓存实例（可选，由调用方通过 getReviewContextWithCache 注入） */
+let moduleCache: CacheManager | undefined;
+
+/**
+ * 重置 MCP 上下文模块级缓存状态（仅供测试）。
+ */
+export function _resetMCPContextCache(): void {
+  moduleCache = undefined;
+}
+
+/**
+ * 计算 key 对应的稳定 SHA-256 hex 哈希。
+ */
+function hashKey(input: string): string {
+  return createHash('sha256').update(input, 'utf8').digest('hex');
+}
+
+/**
+ * 带缓存的 MCP 上下文查询。
+ *
+ * 缓存键基于文件路径列表的稳定哈希，相同路径列表第二次查询将命中缓存。
+ * 当 cache 未提供时，回退到无缓存的 getReviewContext。
+ *
+ * @param filePaths 文件路径列表
+ * @param cache 缓存管理器实例
+ * @param mcpEndpoint MCP 端点（可选）
+ * @param ttl 缓存 TTL（毫秒，可选）
+ */
+export async function getReviewContextWithCache(
+  filePaths: string[],
+  cache?: CacheManager,
+  mcpEndpoint?: string,
+  ttl?: number,
+): Promise<MCPContextResult> {
+  if (!cache) {
+    return getReviewContext(filePaths, mcpEndpoint);
+  }
+  moduleCache = cache;
+  const key = `${MCP_CACHE_PREFIX}${hashKey(filePaths.join('\n'))}`;
+  return cache.getOrCreate<MCPContextResult>(
+    key,
+    () => getReviewContext(filePaths, mcpEndpoint),
+    ttl !== undefined ? { ttl } : undefined,
+  );
 }
