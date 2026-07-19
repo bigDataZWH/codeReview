@@ -87,7 +87,7 @@ describe('comment-publisher', () => {
     it('获取已有 issue comments — 用于找 summary 评论', async () => {
       const issueComments = [
         { id: 200, body: 'some unrelated comment' },
-        { id: 201, body: '## Code Review Summary\n\n**3 findings** ...\n\n<!-- opencode-code-review:summary -->' },
+        { id: 201, body: '## Code Review Summary\n\n**3 findings** ...\n\n<!-- code-review:summary -->' },
       ];
 
       vi.spyOn(globalThis, 'fetch').mockImplementation((url: string | URL | Request) => {
@@ -270,7 +270,7 @@ describe('comment-publisher', () => {
           summaryCreated = true;
           const bodyStr = (init?.body as string) ?? '';
           expect(bodyStr).toContain('Code Review Summary');
-          expect(bodyStr).toContain('opencode-code-review:summary');
+          expect(bodyStr).toContain('code-review:summary');
           expect(bodyStr).toContain('1 findings');
           expect(bodyStr).toContain('1 high');
           return Promise.resolve(makeJsonResponse(201, { id: 501 }));
@@ -291,7 +291,7 @@ describe('comment-publisher', () => {
       ];
 
       const existingIssueComments = [
-        { id: 600, body: '## Code Review Summary\n\n**0 findings** (0 critical, 0 high, 0 medium, 0 low)\n\n<!-- opencode-code-review:summary -->' },
+        { id: 600, body: '## Code Review Summary\n\n**0 findings** (0 critical, 0 high, 0 medium, 0 low)\n\n<!-- code-review:summary -->' },
       ];
 
       let patched = false;
@@ -351,7 +351,7 @@ describe('comment-publisher', () => {
       ];
 
       const existingIssueComments = [
-        { id: 701, body: '## Code Review Summary\n\n**1 findings**\n\n<!-- opencode-code-review:summary -->' },
+        { id: 701, body: '## Code Review Summary\n\n**1 findings**\n\n<!-- code-review:summary -->' },
       ];
 
       const deletedIds: number[] = [];
@@ -415,7 +415,7 @@ describe('comment-publisher', () => {
 
       const existingIssueComments = [
         { id: 802, body: 'unrelated' },
-        { id: 803, body: '## Code Review Summary\n\n**2 findings**\n\n<!-- opencode-code-review:summary -->' },
+        { id: 803, body: '## Code Review Summary\n\n**2 findings**\n\n<!-- code-review:summary -->' },
       ];
 
       const deletedIds: number[] = [];
@@ -490,7 +490,7 @@ describe('comment-publisher', () => {
       ];
 
       const existingIssueComments = [
-        { id: 1001, body: '## Code Review Summary\n\n**1 findings**\n\n<!-- opencode-code-review:summary -->' },
+        { id: 1001, body: '## Code Review Summary\n\n**1 findings**\n\n<!-- code-review:summary -->' },
       ];
 
       const postedComments: unknown[] = [];

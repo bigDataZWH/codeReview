@@ -8,7 +8,7 @@
 [![Test](https://img.shields.io/badge/tests-1092%20passed-brightgreen)](#测试)
 [![Coverage](https://img.shields.io/badge/coverage-96.38%25-brightgreen)](#测试)
 
-`opencode-code-review` 在 AI 与 PR 之间架设一条**确定性管道**：把 git diff 解析、文件过滤、规则匹配、上下文增强、Prompt 拼装、误报过滤、评论发布等环节全部固化为可测试、可缓存、可编排的代码。AI 只在"该它说话的时候"说话，从而把误报率、Token 成本、运行时延压在工程可控范围内。
+`code-review` 在 AI 与 PR 之间架设一条**确定性管道**：把 git diff 解析、文件过滤、规则匹配、上下文增强、Prompt 拼装、误报过滤、评论发布等环节全部固化为可测试、可缓存、可编排的代码。AI 只在"该它说话的时候"说话，从而把误报率、Token 成本、运行时延压在工程可控范围内。
 
 - 远程仓库：<https://github.com/bigDataZWH/codeReview>
 - 适用场景：GitHub PR 自动审查、本地分支预审、安全专项扫描、影响半径分析
@@ -64,32 +64,32 @@
 
 ```bash
 # 全局安装（CLI 用户）
-npm install -g opencode-code-review
+npm install -g code-review
 
 # 本地依赖
-npm install opencode-code-review
+npm install code-review
 ```
 
 ### 基本使用
 
 ```bash
 # 1. 解析 diff，输出结构化 JSON
-git diff main...HEAD | opencode-code-review parse
+git diff main...HEAD | code-review parse
 
 # 2. 生成完整审查 prompt（推荐接 Agent）
-git diff main...HEAD | opencode-code-review review > review-prompt.txt
+git diff main...HEAD | code-review review > review-prompt.txt
 
 # 3. 安全专项审查
-git diff main...HEAD | opencode-code-review security-review
+git diff main...HEAD | code-review security-review
 
 # 4. 全量扫描指定目录
-opencode-code-review scan ./src
+code-review scan ./src
 
 # 5. 影响半径分析
-git diff main...HEAD | opencode-code-review impact
+git diff main...HEAD | code-review impact
 
 # 6. 将 findings 发布为 PR inline 评论
-opencode-code-review publish \
+code-review publish \
   --owner bigDataZWH \
   --repo codeReview \
   --pr 42 \
@@ -101,7 +101,7 @@ opencode-code-review publish \
 ### 以库形式调用
 
 ```typescript
-import { runPipeline, parseDiff, loadRules, filterFalsePositives } from 'opencode-code-review';
+import { runPipeline, parseDiff, loadRules, filterFalsePositives } from 'code-review';
 import { readFileSync } from 'node:fs';
 
 const diff = readFileSync(0, 'utf-8');
@@ -384,19 +384,19 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: Install opencode-code-review
-        run: npm install -g opencode-code-review
+      - name: Install code-review
+        run: npm install -g code-review
       - name: Run Code Review
         run: |
           git diff origin/${{ github.base_ref }}...HEAD | \
-          opencode-code-review review > review-results.json 2>&1 || true
+          code-review review > review-results.json 2>&1 || true
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       - name: Publish Review Comments
         if: always()
         run: |
           if [ -f review-results.json ]; then
-            opencode-code-review publish \
+            code-review publish \
               --owner ${{ github.repository_owner }} \
               --repo ${{ github.event.repository.name }} \
               --pr ${{ github.event.pull_request.number }} \
@@ -441,7 +441,7 @@ pnpm-lock.yaml
 在推送分支前本地跑一遍，把"AI 在 PR 上挑刺"前移到本地：
 
 ```bash
-git diff origin/main...HEAD | opencode-code-review review | less
+git diff origin/main...HEAD | code-review review | less
 ```
 
 ---
@@ -487,7 +487,7 @@ npm run ci
 
 ```typescript
 import { describe, it, expect } from 'vitest';
-import { parseDiff } from 'opencode-code-review';
+import { parseDiff } from 'code-review';
 
 describe('parseDiff', () => {
   it('应正确解析单文件新增 diff', () => {

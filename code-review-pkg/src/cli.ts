@@ -58,7 +58,7 @@ if (command === 'parse') {
   const mode = getArg('--mode') as 'replace' | 'incremental' | undefined;
 
   if (!owner || !repo || !pr || !filePath) {
-    console.error('Usage: opencode-code-review publish --owner <owner> --repo <repo> --pr <pr-number> --file <results.json> [--token <token>] [--mode replace|incremental]');
+    console.error('Usage: code-review publish --owner <owner> --repo <repo> --pr <pr-number> --file <results.json> [--token <token>] [--mode replace|incremental]');
     process.exit(1);
   }
 
@@ -164,14 +164,14 @@ if (command === 'parse') {
     process.exit(1);
   }
 } else {
-  console.log(`opencode-code-review v0.1.0
+  console.log(`code-review v0.1.0
 
 Usage:
-  opencode-code-review init                           Interactive setup wizard
-  opencode-code-review parse            < diff.txt    Parse diff from stdin
-  opencode-code-review review           < diff.txt    Run review pipeline
-  opencode-code-review security-review  < diff.txt    Run security review pipeline
-  opencode-code-review scan             < diff.txt    Run full scan pipeline
-  opencode-code-review impact           < diff.txt    Run impact analysis pipeline
-  opencode-code-review publish --owner <owner> --repo <repo> --pr <pr-number> --file <results.json> [--token <token>] [--mode replace|incremental]`);
+  code-review init                           Interactive setup wizard
+  code-review parse            < diff.txt    Parse diff from stdin
+  code-review review           < diff.txt    Run review pipeline
+  code-review security-review  < diff.txt    Run security review pipeline
+  code-review scan             < diff.txt    Run full scan pipeline
+  code-review impact           < diff.txt    Run impact analysis pipeline
+  code-review publish --owner <owner> --repo <repo> --pr <pr-number> --file <results.json> [--token <token>] [--mode replace|incremental]`);
 }

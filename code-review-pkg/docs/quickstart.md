@@ -1,6 +1,6 @@
 # OpenCode 快速集成指南
 
-本指南面向首次使用 `opencode-code-review` 的 OpenCode 用户，5 分钟完成集成并触发首次代码审查。
+本指南面向首次使用 `code-review` 的 OpenCode 用户，5 分钟完成集成并触发首次代码审查。
 
 ## 前置条件
 
@@ -13,23 +13,23 @@
 
 OpenCode 安装参考：<https://opencode.ai/docs>
 
-## Step 1：安装 opencode-code-review
+## Step 1：安装 code-review
 
 ```bash
 # 全局安装（推荐）
-npm install -g opencode-code-review
+npm install -g code-review
 
 # 验证
-opencode-code-review --version
+code-review --version
 # 或查看帮助
-opencode-code-review
+code-review
 ```
 
 ## Step 2：在项目中生成配置
 
 ```bash
 cd your-project
-opencode-code-review init
+code-review init
 ```
 
 交互式向导会问：
@@ -123,7 +123,7 @@ OpenCode 会在会话中直接显示 Agent 输出的 findings，格式如：
 
 ```bash
 git add -p                                              # 暂存改动
-git diff --cached | opencode-code-review review > review-prompt.txt
+git diff --cached | code-review review > review-prompt.txt
 ```
 
 把 `review-prompt.txt` 内容粘贴到 OpenCode 会话，或直接 `/review`。
@@ -138,7 +138,7 @@ git diff --cached | opencode-code-review review > review-prompt.txt
 
 ```bash
 # 针对包含敏感逻辑的变更
-git diff main...HEAD | opencode-code-review security-review
+git diff main...HEAD | code-review security-review
 ```
 
 或在 OpenCode 中 `/security-review`。
@@ -147,7 +147,7 @@ git diff main...HEAD | opencode-code-review security-review
 
 ```bash
 # 注意：scan 读 stdin，需先构造 diff
-opencode-code-review scan
+code-review scan
 ```
 
 或在 OpenCode 中 `/scan src/`。
@@ -155,7 +155,7 @@ opencode-code-review scan
 ### 场景 E：发布 findings 到 PR
 
 ```bash
-opencode-code-review publish \
+code-review publish \
   --owner your-name \
   --repo your-repo \
   --pr 42 \

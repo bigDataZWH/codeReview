@@ -138,7 +138,7 @@ describe('E2E：CI 流程模拟', () => {
         { id: 101, path: 'old.ts', line: 2, body: 'old comment 2' },
       ];
       state.issueComments = [
-        { id: 200, body: '<!-- opencode-code-review:summary -->\n## old summary' },
+        { id: 200, body: '<!-- code-review:summary -->\n## old summary' },
       ];
       globalThis.fetch = makeFetchMock(state) as unknown as typeof globalThis.fetch;
 

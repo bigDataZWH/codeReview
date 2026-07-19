@@ -1,6 +1,6 @@
 # 贡献指南
 
-感谢你对 `opencode-code-review` 的关注！本文档描述如何参与本项目开发，包括代码贡献、规则贡献、问题反馈等流程。
+感谢你对 `code-review` 的关注！本文档描述如何参与本项目开发，包括代码贡献、规则贡献、问题反馈等流程。
 
 - 项目仓库：<https://github.com/bigDataZWH/codeReview>
 - 设计规格：[SPEC.md](./SPEC.md)
@@ -477,7 +477,7 @@ test(feedback): 增加 autoTuneRules 边界用例
 描述实际发生了什么，附上错误堆栈。
 
 **环境**
-- opencode-code-review 版本：[例如 0.1.0]
+- code-review 版本：[例如 0.1.0]
 - Node.js 版本：[例如 20.10.0]
 - 操作系统：[例如 Ubuntu 22.04]
 - 调用方式：[CLI / 库 / GitHub Action]

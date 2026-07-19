@@ -4,7 +4,7 @@ import { deduplicateFindings } from './post-processor.js';
 // ==================== 常量 ====================
 
 /** Summary 评论标记，用于识别 sticky summary 评论 */
-const SUMMARY_MARKER = '<!-- opencode-code-review:summary -->';
+const SUMMARY_MARKER = '<!-- code-review:summary -->';
 
 /** GitHub API 基础 URL */
 const GITHUB_API_BASE = 'https://api.github.com';
@@ -37,7 +37,7 @@ function buildHeaders(token: string): Record<string, string> {
   return {
     Authorization: `Bearer ${token}`,
     Accept: 'application/vnd.github+json',
-    'User-Agent': 'opencode-code-review',
+    'User-Agent': 'code-review',
     'Content-Type': 'application/json',
   };
 }

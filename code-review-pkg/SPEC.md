@@ -1,4 +1,4 @@
-# opencode-code-review — 技术规格说明书 (SPEC)
+# code-review — 技术规格说明书 (SPEC)
 
 ## 1. 项目概述
 

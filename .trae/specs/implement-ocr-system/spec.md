@@ -1,7 +1,7 @@
 # OpenCode AI 代码检视系统实现 Spec
 
 ## Why
-基于已完成的优化方案（[opencode-code-review-optimized.html](file:///workspace/opencode-code-review/opencode-code-review-optimized.html)），将设计落地为可运行的代码系统。采用 TDD（测试驱动开发）方式确保质量，通过 10 次迭代逐步完善功能，最终推送到 GitHub 仓库。
+基于已完成的优化方案（[code-review-optimized.html](file:///workspace/code-review/code-review-optimized.html)），将设计落地为可运行的代码系统。采用 TDD（测试驱动开发）方式确保质量，通过 10 次迭代逐步完善功能，最终推送到 GitHub 仓库。
 
 ## What Changes
 - 新增 `ocr-pipe` TypeScript CLI 工具：确定性管道层（Git Diff 解析、文件过滤、规则引擎、图谱网关）

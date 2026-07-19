@@ -459,11 +459,11 @@ jobs:
           node-version: '20'
       - run: npm ci
       - name: Run code review
-        run: npx opencode-code-review analyze \`\${{ github.event.pull_request.diff_url }}\``,
+        run: npx code-review analyze \`\${{ github.event.pull_request.diff_url }}\``,
   ];
   if (securityReview) {
     steps.push(`      - name: Run security review
-        run: npx opencode-code-review security-review \`\${{ github.event.pull_request.diff_url }}\``);
+        run: npx code-review security-review \`\${{ github.event.pull_request.diff_url }}\``);
   }
   return steps.join('\n') + '\n';
 }

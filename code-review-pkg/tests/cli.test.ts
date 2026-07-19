@@ -465,7 +465,7 @@ index 3..4 100644
       expect(exitCode).toBeNull();
       expect(stdout.length).toBeGreaterThan(0);
       const help = stdout.join('\n');
-      expect(help).toContain('opencode-code-review');
+      expect(help).toContain('code-review');
       expect(help).toContain('Usage');
       expect(help).toContain('parse');
       expect(help).toContain('review');
@@ -482,7 +482,7 @@ index 3..4 100644
       });
 
       const help = stdout.join('\n');
-      expect(help).toContain('opencode-code-review');
+      expect(help).toContain('code-review');
       expect(help).toContain('Usage');
     });
   });
