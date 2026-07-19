@@ -349,6 +349,90 @@ export async function runPipelineFromFile(
   return runPipeline(diffText, config);
 }
 
+/**
+ * 运行带分批处理的安全审查管道。
+ *
+ * 当文件数 ≥ batching.threshold（默认 LARGE_PR_THRESHOLD=30）时触发分批处理。
+ * 其他行为同 runPipelineBatched，但使用安全 prompt 模板。
+ */
+export async function runSecurityPipelineBatched(
+  diffText: string,
+  config: PipelineConfig,
+): Promise<PipelineResult> {
+  const batching = config.batching ?? {};
+  const threshold = batching.threshold ?? LARGE_PR_THRESHOLD;
+  const batchSize = batching.batchSize ?? DEFAULT_BATCH_SIZE;
+  const prioritize = batching.prioritize ?? true;
+  const parallel = batching.parallel ?? false;
+
+  const baseResult = await runPipeline(diffText, config);
+  const filteredDiffs = baseResult.filteredDiffs;
+
+  let orderedDiffs = filteredDiffs;
+  if (prioritize) {
+    orderedDiffs = prioritizeDiffs(filteredDiffs, baseResult.annotatedBundles);
+  }
+
+  const isBatched = filteredDiffs.length >= threshold;
+
+  const batchRes = await batchProcess(orderedDiffs, {
+    batchSize,
+    parallel,
+    processFn: async (batch) => {
+      const bundles = bundleFiles(batch, config.bundle);
+      const rules = config.rules ?? [];
+
+      let findings: Finding[] = [];
+      for (const bundle of bundles) {
+        const annotations = rules.length > 0 ? matchRules(bundle, rules) : [];
+        for (const annotation of annotations) {
+          findings.push({
+            file: bundle.primary.path,
+            line: annotation.line ?? 0,
+            severity: annotation.severity,
+            category: annotation.category,
+            message: annotation.message,
+            confidence: 1.0,
+            source: 'rule',
+            ruleId: annotation.ruleId,
+          });
+        }
+      }
+
+      findings = correctLineLocations(findings, batch);
+      findings = filterFalsePositives(findings, config.falsePositiveRules);
+
+      return findings;
+    },
+  });
+
+  const securityPrompt = buildSecurityPrompt({
+    filteredDiffs: orderedDiffs,
+    bundles: baseResult.bundles,
+    annotatedBundles: baseResult.annotatedBundles,
+    context: baseResult.context,
+  });
+
+  const result: PipelineResult = {
+    ...baseResult,
+    filteredDiffs: orderedDiffs,
+    prompt: securityPrompt,
+    findings: batchRes.allFindings,
+  };
+
+  if (isBatched) {
+    result.batchInfo = {
+      batchesCount: batchRes.batches.length,
+      totalFiles: batchRes.totalProcessed,
+      batchSize,
+      prioritized: prioritize,
+      failedBatches: batchRes.errors.length,
+    };
+  }
+
+  return result;
+}
+
 // ============================================================
 // 迭代 5：大文件分块与大 PR 分批处理
 // ============================================================

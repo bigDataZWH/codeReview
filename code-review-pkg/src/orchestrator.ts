@@ -26,7 +26,7 @@ import type {
 import { DEFAULT_BATCH_SIZE } from './constants.js';
 import { matchRules } from './rule-engine.js';
 import { bundleFiles } from './file-filter.js';
-import { callLLM } from './ai-reflection.js';
+import { callLLM, buildBatchReflectionPrompt } from './ai-reflection.js';
 import { getImpactRadius } from './mcp-adapter.js';
 
 // ============================================================
@@ -447,14 +447,20 @@ export interface BuildReviewDagOptions {
   impactThreshold?: number;
   /** 是否包含 AI 审查节点（默认 true）。未配置模型时设为 false 可跳过 AI 节点 */
   includeAIReviewer?: boolean;
+  /** 是否包含安全审查节点（默认 true） */
+  includeSecurityReviewer?: boolean;
   /** 是否包含影响分析节点（默认根据文件数动态判断） */
   includeImpactAnalyzer?: boolean;
+  /** 是否包含反思评估节点（默认 true） */
+  includeReflector?: boolean;
   /** 规则列表（rule-engine 节点使用） */
   rules?: Rule[];
-  /** LLM 配置（ai-reviewer 节点使用，未配置时跳过 LLM 调用） */
+  /** LLM 配置（ai-reviewer/security-reviewer/reflector 节点使用） */
   llmConfig?: LLMProviderConfig;
   /** 已构建的 review prompt（ai-reviewer 节点使用，为空时跳过 LLM 调用） */
   reviewPrompt?: string;
+  /** 已构建的 security prompt（security-reviewer 节点使用，为空时跳过 LLM 调用） */
+  securityPrompt?: string;
   /** 依赖注入：规则匹配函数（默认 matchRules） */
   matchRulesFn?: typeof matchRules;
   /** 依赖注入：LLM 调用函数（默认 callLLM） */
@@ -546,16 +552,24 @@ function parseFindingsFromLLMResponse(response: string): Finding[] {
 /**
  * 根据变更规模构建审查 DAG。
  *
+ * DAG 结构（四阶段编排）：
+ * - 第一层（并行）：rule-engine、ai-reviewer、security-reviewer 无依赖并行执行
+ * - 第二层（串行）：impact-analyzer 依赖前三个节点完成后执行
+ * - 第三层（串行）：reflector 依赖 impact-analyzer 完成后执行
+ *
  * 默认包含：
  * - rule-engine：规则匹配（无依赖），调用 matchRules 将 RuleAnnotation 转为 source='rule' 的 findings
- * - ai-reviewer：AI 审查（依赖 rule-engine），调用 callLLM 解析响应为 source='ai' 的 findings；
+ * - ai-reviewer：AI 审查（无依赖），调用 callLLM 解析响应为 source='ai' 的 findings；
  *   未配置 llmConfig / reviewPrompt 时返回空数组；LLM 失败时降级返回空数组
- * - impact-analyzer：影响分析（依赖 rule-engine），调用 getImpactRadius 将 BlastRadiusItem 转为 findings；
+ * - security-reviewer：安全审查（无依赖），调用 callLLM 解析响应为 source='ai' 的 findings；
+ *   未配置 llmConfig / securityPrompt 时返回空数组；LLM 失败时降级返回空数组
+ * - impact-analyzer：影响分析（依赖 rule-engine, ai-reviewer, security-reviewer），
+ *   调用 getImpactRadius 将 BlastRadiusItem 转为 findings；
  *   仅大变更时包含，可通过 includeImpactAnalyzer 控制；失败时降级返回空数组
+ * - reflector：反思评估（依赖 impact-analyzer），对前序所有 findings 做置信度评估；
+ *   未配置 llmConfig 时返回空数组；LLM 失败时降级返回空数组
  *
  * 通过 options 注入 deps 函数（matchRulesFn / callLLMFn / getImpactRadiusFn）可在测试中替换为 mock。
- * 不传 options 时行为：rule-engine 返回空 findings（无 rules），ai-reviewer 跳过（无 llmConfig），
- * impact-analyzer 调用真实 getImpactRadius（MCP 不可用时返回空）。
  */
 export function buildReviewDag(
   diffs: FileDiff[],
@@ -563,7 +577,9 @@ export function buildReviewDag(
 ): DagNode<Finding[]>[] {
   const threshold = options?.impactThreshold ?? DEFAULT_IMPACT_THRESHOLD;
   const includeAIReviewer = options?.includeAIReviewer ?? true;
+  const includeSecurityReviewer = options?.includeSecurityReviewer ?? true;
   const includeImpactAnalyzer = options?.includeImpactAnalyzer ?? !shouldSkipImpactAnalysis(diffs.length, threshold);
+  const includeReflector = options?.includeReflector ?? true;
 
   // 依赖注入：默认调用真实函数
   const matchRulesFn = options?.matchRulesFn ?? matchRules;
@@ -572,6 +588,7 @@ export function buildReviewDag(
   const rules = options?.rules ?? [];
   const llmConfig = options?.llmConfig;
   const reviewPrompt = options?.reviewPrompt ?? '';
+  const securityPrompt = options?.securityPrompt ?? '';
 
   const nodes: DagNode<Finding[]>[] = [
     {
@@ -579,7 +596,6 @@ export function buildReviewDag(
       agentType: 'rule-engine',
       dependencies: [],
       handler: async (ctx) => {
-        // 优先使用 ctx.diffs（executeDag 传入），为空时回退到闭包 diffs
         const diffsForMatch = ctx.diffs.length > 0 ? ctx.diffs : diffs;
         const bundles = bundleFiles(diffsForMatch);
         const findings: Finding[] = [];
@@ -598,7 +614,7 @@ export function buildReviewDag(
     nodes.push({
       id: 'ai-reviewer',
       agentType: 'ai-reviewer',
-      dependencies: ['rule-engine'],
+      dependencies: [],
       handler: async () => {
         if (!llmConfig || !reviewPrompt) return [];
         try {
@@ -612,11 +628,33 @@ export function buildReviewDag(
     });
   }
 
+  if (includeSecurityReviewer) {
+    nodes.push({
+      id: 'security-reviewer',
+      agentType: 'security-reviewer',
+      dependencies: [],
+      handler: async () => {
+        if (!llmConfig || !securityPrompt) return [];
+        try {
+          const response = await callLLMFn(securityPrompt, llmConfig);
+          return parseFindingsFromLLMResponse(response);
+        } catch (err) {
+          console.warn('security-reviewer LLM call failed, returning empty:', err);
+          return [];
+        }
+      },
+    });
+  }
+
+  const firstLayerIds = ['rule-engine'];
+  if (includeAIReviewer) firstLayerIds.push('ai-reviewer');
+  if (includeSecurityReviewer) firstLayerIds.push('security-reviewer');
+
   if (includeImpactAnalyzer) {
     nodes.push({
       id: 'impact-analyzer',
       agentType: 'impact-analyzer',
-      dependencies: ['rule-engine'],
+      dependencies: firstLayerIds,
       handler: async () => {
         try {
           const filePaths = diffs.map((d) => d.path).filter(Boolean);
@@ -625,6 +663,42 @@ export function buildReviewDag(
         } catch (err) {
           console.warn('impact-analyzer failed, returning empty:', err);
           return [];
+        }
+      },
+    });
+  }
+
+  if (includeReflector && includeImpactAnalyzer) {
+    nodes.push({
+      id: 'reflector',
+      agentType: 'custom',
+      dependencies: ['impact-analyzer'],
+      handler: async (ctx) => {
+        if (!llmConfig) return [];
+        try {
+          const allFindings: Finding[] = [];
+          for (const [, result] of ctx.previousResults) {
+            if (Array.isArray(result)) {
+              allFindings.push(...(result as Finding[]));
+            }
+          }
+          if (allFindings.length === 0) return [];
+          const reflectionPrompt = buildBatchReflectionPrompt(allFindings);
+          const response = await callLLMFn(reflectionPrompt, llmConfig);
+          const confidenceResults = JSON.parse(response) as Array<{ id: number; confidence: number }>;
+          for (let i = 0; i < allFindings.length && i < confidenceResults.length; i++) {
+            allFindings[i].confidence = confidenceResults[i].confidence;
+          }
+          return allFindings;
+        } catch (err) {
+          console.warn('reflector LLM call failed, returning original findings:', err);
+          const allFindings: Finding[] = [];
+          for (const [, result] of ctx.previousResults) {
+            if (Array.isArray(result)) {
+              allFindings.push(...(result as Finding[]));
+            }
+          }
+          return allFindings;
         }
       },
     });

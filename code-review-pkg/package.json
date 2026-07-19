@@ -24,6 +24,7 @@
   ],
   "scripts": {
     "build": "tsup",
+    "prebuild": "node scripts/sync-rules-md.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",

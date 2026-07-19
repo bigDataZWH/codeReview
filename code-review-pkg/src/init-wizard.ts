@@ -4,11 +4,15 @@
 // - 根据 WizardOptions 生成完整的项目配置文件集合
 // - 输出文件以"路径 → 内容"映射形式返回，调用方负责写盘
 // - 支持：项目语言、审查强度、安全审查开关、图谱开关、默认模型、部署方式
+// - 支持：大 PR 时自动启用 MCP code-review-graph
 //
 // 设计取舍：
 // - 不直接调用 fs，便于在测试和 CLI 中复用
 // - 模板使用模板字符串拼接，避免引入 handlebars 等模板引擎依赖
 // - 生成的 opencode.jsonc 必须是有效 JSONC（移除注释后能 JSON.parse）
+// - 当 diff 文件数 >= LARGE_PR_THRESHOLD 时自动启用 MCP
+
+import { LARGE_PR_THRESHOLD } from './constants.js';
 
 /** 支持的项目语言 */
 export type ProjectLanguage =
@@ -41,6 +45,8 @@ export interface WizardOptions {
   defaultModel?: string;
   /** 部署方式（默认 cli） */
   deployment?: DeploymentMode;
+  /** diff 文件数（用于大 PR 自动启用 MCP，可选） */
+  diffFileCount?: number;
 }
 
 /** 生成的配置集合 */
@@ -114,7 +120,9 @@ export function generateConfig(options: WizardOptions): GeneratedConfig {
   const language = options.language;
   const reviewStrength: ReviewStrength = options.reviewStrength ?? 'standard';
   const securityReview = options.securityReview ?? true;
-  const graphEnabled = options.graphEnabled ?? false;
+  const diffFileCount = options.diffFileCount ?? 0;
+  const isLargePR = diffFileCount >= LARGE_PR_THRESHOLD;
+  const graphEnabled = options.graphEnabled ?? isLargePR;
   const defaultModel = options.defaultModel ?? DEFAULT_MODELS[language];
   const deployment: DeploymentMode = options.deployment ?? 'cli';
 

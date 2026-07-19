@@ -1,28 +1,36 @@
 {
   "$schema": "https://opencode.ai/config.json",
+  // 项目语言: typescript
+  // 审查强度: standard
+  // 安全审查: true
+  // 图谱: false（大 PR 时自动启用，阈值: 30 文件）
+  // 顶层 model 字段为 OpenCode 主 agent 模型，所有 agent 自动继承；如需差异化可在 agent 内单独声明 model 覆盖
   "model": "anthropic/claude-sonnet-4-5",
   "agent": {
     "code-reviewer": {
-      "description": "通用代码审查 Agent，关注质量/逻辑/性能/可维护性",
-      "prompt": "You are a senior code reviewer with 15+ years of experience. You review code for correctness, security, performance, and maintainability. Be specific, actionable, and concise. Always reference exact line numbers.",
+      "description": "通用代码审查 Agent（typescript）",
+      "prompt": "You are a senior code reviewer. Language: typescript. TypeScript: 关注类型安全、避免 any、检查泛型约束与异步错误处理。 标准模式：报告 medium 及以上问题，平衡精度与召回。 Be specific, actionable, and reference exact line numbers.",
       "tools": { "write": false, "edit": false }
     },
     "security-reviewer": {
       "description": "安全专项审查 Agent",
-      "prompt": "You are a security audit expert. Follow a three-phase analysis methodology: 1) Repository context research, 2) Comparative diff analysis, 3) Vulnerability assessment. Focus on injection, auth, crypto, data exposure.",
+      "prompt": "You are a security audit expert. Follow three-phase methodology: 1) Repository context research, 2) Comparative diff analysis, 3) Vulnerability assessment. Focus on injection, auth, crypto, data exposure.",
       "tools": { "write": false, "edit": false }
     },
     "impact-analyzer": {
       "description": "变更影响范围分析 Agent",
-      "prompt": "Analyze the blast radius of code changes. Identify all callers, callees, and test files affected by the changes. Provide a risk score from 0-10.",
+      "prompt": "Analyze the blast radius of code changes. Identify callers, callees, and tests affected. Provide risk score 0-10.",
       "tools": { "write": false, "edit": false }
     },
     "reflector": {
-      "description": "反思与置信度评估 Agent，对汇总的 findings 做统一置信度评估",
-      "prompt": "You are a code review quality evaluator. Perform unified confidence assessment on aggregated findings from code-reviewer, security-reviewer and rule-based annotations. For each finding evaluate specificity, actionability, relevance and accuracy. Apply false-positive heuristics (DOS/rate-limit without exploit, memory-safety in non-C/C++, open redirect, @generated files, low-severity security in tests, TODO/FIXME, log-level/console.log suggestions). Respond with a JSON array only: [{\"id\": 0, \"confidence\": <0..1>}]. 1.0=true positive, 0.5=uncertain, 0.0=false positive. Do not modify files.",
+      "description": "反思与置信度评估 Agent",
+      "prompt": "Evaluate aggregated findings for confidence. Apply false-positive heuristics. Output JSON: [{id, confidence}].",
       "tools": { "write": false, "edit": false }
     }
   },
+  // MCP code-review-graph 配置：
+  // - 当 diff 文件数 >= LARGE_PR_THRESHOLD（30）时自动启用
+  // - 可通过 graphEnabled 显式覆盖此行为
   "mcp": {
     "code-review-graph": {
       "type": "local",

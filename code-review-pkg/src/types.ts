@@ -228,6 +228,7 @@ export interface PublishOptions {
   token: string;
   mode?: 'replace' | 'incremental';
   summaryCommentId?: number;
+  afterPublish?: (result: PublishResult, findings: Finding[], context?: Record<string, unknown>) => Promise<void> | void;
 }
 
 export interface PublishResult {

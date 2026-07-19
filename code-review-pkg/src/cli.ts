@@ -1,10 +1,15 @@
 import { parseDiff } from './diff-parser.js';
-import { runPipeline, runSecurityPipeline } from './pipeline.js';
+import { runPipeline, runSecurityPipeline, runPipelineBatched, runSecurityPipelineBatched } from './pipeline.js';
 import { buildImpactPrompt, buildScanPrompt } from './prompt-builder.js';
 import { publishReview } from './comment-publisher.js';
 import { generateConfig } from './init-wizard.js';
-import { callLLM } from './ai-reflection.js';
-import type { LLMProviderConfig } from './types.js';
+import { callLLM, buildBatchReflectionPrompt } from './ai-reflection.js';
+import { excludeGeneratedFiles, detectLanguage } from './file-filter.js';
+import { collectMetrics, generateDashboardData, type MetricsInput } from './metrics.js';
+import { FeedbackStore, markFalsePositive } from './feedback.js';
+import { LARGE_PR_THRESHOLD } from './constants.js';
+import type { LLMProviderConfig, FilterConfig, Finding } from './types.js';
+import type { SessionSnapshot } from './metrics.js';
 import { readFileSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { stdin } from 'node:process';
@@ -74,18 +79,92 @@ if (command === 'parse') {
   console.log(JSON.stringify(files, null, 2));
 } else if (command === 'review') {
   const diffText = readFileSync(0, 'utf-8');
-  // 简化调用
-  const result = await runPipeline(diffText, { filter: {} });
-  await outputReviewResult(result.prompt);
+  const parsedDiffs = parseDiff(diffText);
+  const isLargePR = parsedDiffs.length >= LARGE_PR_THRESHOLD;
+  
+  if (isLargePR) {
+    const result = await runPipelineBatched(diffText, { 
+      filter: {},
+      batching: { 
+        threshold: LARGE_PR_THRESHOLD,
+        prioritize: true,
+        parallel: false
+      }
+    });
+    await outputReviewResult(result.prompt);
+  } else {
+    const result = await runPipeline(diffText, { filter: {} });
+    await outputReviewResult(result.prompt);
+  }
 } else if (command === 'security-review') {
   const diffText = readFileSync(0, 'utf-8');
-  const result = await runSecurityPipeline(diffText, { filter: {} });
-  await outputReviewResult(result.prompt);
+  const parsedDiffs = parseDiff(diffText);
+  const isLargePR = parsedDiffs.length >= LARGE_PR_THRESHOLD;
+  
+  if (isLargePR) {
+    const result = await runSecurityPipelineBatched(diffText, { 
+      filter: {},
+      batching: { 
+        threshold: LARGE_PR_THRESHOLD,
+        prioritize: true,
+        parallel: false
+      }
+    });
+    await outputReviewResult(result.prompt);
+  } else {
+    const result = await runSecurityPipeline(diffText, { filter: {} });
+    await outputReviewResult(result.prompt);
+  }
 } else if (command === 'scan') {
   const diffText = readFileSync(0, 'utf-8');
-  const result = await runPipeline(diffText, { filter: {} });
+  
+  const scanArgs = args.slice(1);
+  const getArg = (flag: string): string | undefined => {
+    const idx = scanArgs.indexOf(flag);
+    return idx !== -1 && idx + 1 < scanArgs.length ? scanArgs[idx + 1] : undefined;
+  };
+  
+  const getMultiArg = (flag: string): string[] => {
+    const result: string[] = [];
+    let idx = scanArgs.indexOf(flag);
+    while (idx !== -1) {
+      if (idx + 1 < scanArgs.length) {
+        result.push(scanArgs[idx + 1]);
+      }
+      idx = scanArgs.indexOf(flag, idx + 2);
+    }
+    return result;
+  };
+  
+  const languages = getMultiArg('--language');
+  const limitStr = getArg('--limit');
+  const limit = limitStr ? parseInt(limitStr, 10) : 0;
+  const excludePatterns = getMultiArg('--exclude');
+  
+  const filterConfig: FilterConfig = {};
+  
+  if (languages.length > 0) {
+    filterConfig.language = languages;
+  }
+  
+  if (limit > 0) {
+    filterConfig.maxFiles = limit;
+  }
+  
+  if (excludePatterns.length > 0) {
+    filterConfig.ignorePatterns = excludePatterns;
+  }
+  
+  const result = await runPipeline(diffText, { filter: filterConfig });
+  
+  const filteredWithoutGenerated = excludeGeneratedFiles(result.filteredDiffs);
+  
+  for (const diff of filteredWithoutGenerated) {
+    diff.language = detectLanguage(diff.path);
+  }
+  
   const scanPrompt = buildScanPrompt({
-    filteredDiffs: result.filteredDiffs,
+    filteredDiffs: filteredWithoutGenerated,
     bundles: result.bundles,
     annotatedBundles: result.annotatedBundles,
     context: result.context,
@@ -101,6 +180,11 @@ if (command === 'parse') {
     context: result.context,
   });
   await outputReviewResult(impactPrompt);
+} else if (command === 'reflect') {
+  const diffText = readFileSync(0, 'utf-8');
+  const findings = JSON.parse(diffText);
+  const prompt = buildBatchReflectionPrompt(findings);
+  await outputReviewResult(prompt);
 } else if (command === 'publish') {
   const publishArgs = args.slice(1);
   const getArg = (flag: string): string | undefined => {
@@ -221,6 +305,125 @@ if (command === 'parse') {
     console.error('初始化失败:', err);
     process.exit(1);
   }
+} else if (command === 'feedback') {
+  const feedbackArgs = args.slice(1);
+  const findingId = feedbackArgs[0];
+  const action = feedbackArgs[1];
+
+  const getArg = (flag: string): string | undefined => {
+    const idx = feedbackArgs.indexOf(flag);
+    return idx !== -1 && idx + 1 < feedbackArgs.length ? feedbackArgs[idx + 1] : undefined;
+  };
+
+  const reason = getArg('--reason');
+
+  if (!findingId || !action) {
+    console.error('Usage: code-review feedback <finding-id> <false-positive|accept> [--reason <reason>]');
+    process.exit(1);
+  }
+
+  const VALID_ACTIONS = ['false-positive', 'accept'];
+  if (!VALID_ACTIONS.includes(action)) {
+    console.error(`Error: invalid action '${action}'. Valid actions: ${VALID_ACTIONS.join(', ')}`);
+    process.exit(1);
+  }
+
+  const store = new FeedbackStore();
+
+  if (action === 'false-positive') {
+    const result = markFalsePositive(store, findingId, undefined, reason);
+    console.log(`✅ Marked finding "${findingId}" as false positive`);
+    if (result.reason) {
+      console.log(`   Reason: ${result.reason}`);
+    }
+    console.log(`   Feedback ID: ${result.id}`);
+    if (result.ignoreRule) {
+      console.log(`   Generated ignore rule: ${JSON.stringify(result.ignoreRule)}`);
+    }
+  } else if (action === 'accept') {
+    const result = store.recordFeedback(findingId, 'accept', reason);
+    console.log(`✅ Accepted finding "${findingId}"`);
+    if (result.reason) {
+      console.log(`   Reason: ${result.reason}`);
+    }
+    console.log(`   Feedback ID: ${result.id}`);
+  }
+} else if (command === 'metrics') {
+  const metricsArgs = args.slice(1);
+  const getArg = (flag: string): string | undefined => {
+    const idx = metricsArgs.indexOf(flag);
+    return idx !== -1 && idx + 1 < metricsArgs.length ? metricsArgs[idx + 1] : undefined;
+  };
+
+  const sessionsStr = getArg('--sessions');
+  const findingsStr = getArg('--findings');
+  const feedbackStr = getArg('--feedback');
+  const tokenConsumedStr = getArg('--token-consumed');
+
+  if (!sessionsStr || !findingsStr || !feedbackStr) {
+    console.error('Usage: code-review metrics --sessions <json> --findings <json> --feedback <json> [--token-consumed <number>]');
+    process.exit(1);
+  }
+
+  let sessions: SessionSnapshot[];
+  let findings: Finding[];
+  try {
+    sessions = JSON.parse(sessionsStr) as SessionSnapshot[];
+    findings = JSON.parse(findingsStr) as Finding[];
+  } catch (err) {
+    console.error('Error: --sessions and --findings must be valid JSON');
+    process.exit(1);
+  }
+
+  const feedbackStore = new FeedbackStore();
+  try {
+    const feedbackData = JSON.parse(feedbackStr) as Array<{ findingId: string; action: 'accept' | 'reject' | 'modify'; reason?: string }>;
+    for (const fb of feedbackData) {
+      feedbackStore.recordFeedback(fb.findingId, fb.action, fb.reason);
+    }
+  } catch (err) {
+    console.error('Error: --feedback must be valid JSON');
+    process.exit(1);
+  }
+
+  const tokenConsumed = tokenConsumedStr ? parseInt(tokenConsumedStr, 10) : 0;
+
+  const metrics = collectMetrics({
+    sessions,
+    findings,
+    feedback: feedbackStore,
+    tokenConsumed,
+  });
+
+  console.log(JSON.stringify(metrics, null, 2));
+} else if (command === 'dashboard') {
+  const inputText = readFileSync(0, 'utf-8');
+  let inputData: Partial<MetricsInput>;
+  try {
+    inputData = inputText.trim() ? JSON.parse(inputText) : {};
+  } catch (err) {
+    console.error('Error: Invalid JSON input for dashboard command');
+    process.exit(1);
+  }
+
+  const sessions: SessionSnapshot[] = inputData.sessions ?? [];
+  const findings: Finding[] = inputData.findings ?? [];
+  const tokenConsumed = inputData.tokenConsumed ?? 0;
+
+  let findingsBySession: Map<string, Finding[]> | undefined;
+  if (inputData.findingsBySession) {
+    findingsBySession = new Map(Object.entries(inputData.findingsBySession));
+  }
+
+  const dashboard = generateDashboardData({
+    sessions,
+    findings,
+    feedback: new FeedbackStore(),
+    tokenConsumed,
+    findingsBySession,
+  });
+
+  console.log(JSON.stringify(dashboard, null, 2));
 } else {
   console.log(`code-review v0.1.0
 
@@ -231,10 +434,24 @@ Usage:
   code-review security-review  < diff.txt    Run security review pipeline
   code-review scan             < diff.txt    Run full scan pipeline
   code-review impact           < diff.txt    Run impact analysis pipeline
+  code-review reflect          < findings.json  Run confidence reflection on findings
   code-review publish --owner <owner> --repo <repo> --pr <pr-number> --file <results.json> [--token <token>] [--mode replace|incremental]
+  code-review feedback         <finding-id> <false-positive|accept> [--reason <reason>]  Submit feedback on a finding
+  code-review metrics --sessions <json> --findings <json> --feedback <json> [--token-consumed <number>]  Generate review metrics
+  code-review dashboard        < input.json  Generate dashboard data with trends and charts
 
-  The review/security-review/scan/impact commands accept:
+  The review/security-review/scan/impact/reflect commands accept:
     --execute                 Call LLM to complete end-to-end review
     --llm-config '<json>'     JSON string with LLM provider config (required with --execute)
-                              Example: '{"provider":"openai","apiKey":"KEY","model":"gpt-4"}'`);
+                              Example: '{"provider":"openai","apiKey":"KEY","model":"gpt-4"}'
+
+  The scan command also accepts:
+    --language <lang>         Filter by language (supports multiple, e.g. --language typescript --language python)
+    --limit <number>          Limit number of files to scan (0 = unlimited)
+    --exclude <pattern>       Exclude files matching glob pattern (supports multiple)
+
+  The feedback command:
+    false-positive            Mark a finding as false positive (reject)
+    accept                    Accept a finding as valid
+    --reason <reason>         Optional reason for the feedback`);
 }

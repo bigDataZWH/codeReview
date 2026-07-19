@@ -103,6 +103,7 @@ export {
 export type {
   CacheEntry,
   HitStats,
+  CategoryHitStats,
   CacheSetOptions,
   L2DiskCacheOptions,
   CacheManagerOptions,

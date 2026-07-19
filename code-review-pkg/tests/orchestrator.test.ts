@@ -694,10 +694,10 @@ describe('buildReviewDag DAG 构建', () => {
     expect(dag.map((n) => n.id)).toContain('impact-analyzer');
   });
 
-  it('ai-reviewer 依赖 rule-engine', () => {
+  it('ai-reviewer 无依赖（与 rule-engine 并行）', () => {
     const dag = buildReviewDag([makeFileDiff('a.ts')]);
     const aiNode = dag.find((n) => n.id === 'ai-reviewer');
-    expect(aiNode?.dependencies).toContain('rule-engine');
+    expect(aiNode?.dependencies).toEqual([]);
   });
 
   it('小变更 DAG 可执行且 handler 返回空数组', async () => {
@@ -711,13 +711,13 @@ describe('buildReviewDag DAG 构建', () => {
     }
   });
 
-  it('大变更 DAG 可执行（含 impact-analyzer）', async () => {
+  it('大变更 DAG 可执行（含 impact-analyzer 和 reflector）', async () => {
     const diffs = Array.from({ length: 6 }, (_, i) => makeFileDiff(`file${i}.ts`));
     const dag = buildReviewDag(diffs);
     const context: DagContext = { diffs: [], previousResults: new Map() };
     const result = await executeDag(dag, context);
     expect(result.errors.size).toBe(0);
-    expect(result.results.size).toBe(3);
+    expect(result.results.size).toBe(5);
   });
 
   it('模型未配置时跳过 ai-reviewer — includeAIReviewer=false', () => {
@@ -729,9 +729,9 @@ describe('buildReviewDag DAG 构建', () => {
     expect(ids).toContain('impact-analyzer');
   });
 
-  it('模型未配置时仅 rule-engine — includeAIReviewer=false + includeImpactAnalyzer=false', () => {
+  it('模型未配置时仅 rule-engine — includeAIReviewer=false + includeImpactAnalyzer=false + includeSecurityReviewer=false', () => {
     const diffs = Array.from({ length: 6 }, (_, i) => makeFileDiff(`file${i}.ts`));
-    const dag = buildReviewDag(diffs, { includeAIReviewer: false, includeImpactAnalyzer: false });
+    const dag = buildReviewDag(diffs, { includeAIReviewer: false, includeImpactAnalyzer: false, includeSecurityReviewer: false });
     const ids = dag.map((n) => n.id);
     expect(ids).toEqual(['rule-engine']);
   });
@@ -745,7 +745,7 @@ describe('buildReviewDag DAG 构建', () => {
 
   it('仅 rule-engine 的 DAG 可执行', async () => {
     const diffs = [makeFileDiff('a.ts')];
-    const dag = buildReviewDag(diffs, { includeAIReviewer: false, includeImpactAnalyzer: false });
+    const dag = buildReviewDag(diffs, { includeAIReviewer: false, includeImpactAnalyzer: false, includeSecurityReviewer: false });
     const context: DagContext = { diffs: [], previousResults: new Map() };
     const result = await executeDag(dag, context);
     expect(result.errors.size).toBe(0);
@@ -1408,17 +1408,20 @@ describe('buildReviewDag with real handlers', () => {
         rules,
         llmConfig: { provider: 'openai', apiKey: 'k', model: 'm' },
         reviewPrompt: 'Review',
+        securityPrompt: 'Security review',
         callLLMFn,
         getImpactRadiusFn,
         includeAIReviewer: true,
+        includeSecurityReviewer: true,
         includeImpactAnalyzer: true,
+        includeReflector: true,
       });
 
       const context: DagContext = { diffs, previousResults: new Map() };
       const result = await executeDag(nodes, context);
 
       expect(result.errors.size).toBe(0);
-      expect(result.results.size).toBe(3);
+      expect(result.results.size).toBe(5);
 
       const ruleFindings = result.results.get('rule-engine') as Finding[];
       expect(ruleFindings.length).toBeGreaterThan(0);
@@ -1438,6 +1441,7 @@ describe('buildReviewDag with real handlers', () => {
       const nodes = buildReviewDag(diffs, {
         includeAIReviewer: false,
         includeImpactAnalyzer: false,
+        includeSecurityReviewer: false,
       });
       const context: DagContext = { diffs, previousResults: new Map() };
       const result = await executeDag(nodes, context);

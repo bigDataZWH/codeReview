@@ -37,6 +37,13 @@ export interface HitStats {
   hitRate: number;
 }
 
+/** 分类命中统计 */
+export interface CategoryHitStats {
+  diff: HitStats;
+  rules: HitStats;
+  mcp: HitStats;
+}
+
 /** set 操作选项 */
 export interface CacheSetOptions {
   /** TTL 毫秒数；undefined 表示永久 */
@@ -295,6 +302,21 @@ export interface CacheManagerOptions {
   enableL2?: boolean;
 }
 
+/** 缓存键前缀（与 pipeline.ts 保持一致） */
+const CACHE_KEY_PREFIX = {
+  diff: 'ocr:diff:',
+  rules: 'ocr:rules:',
+  mcp: 'ocr:mcp:',
+};
+
+/** 判断 key 所属分类 */
+function getCategory(key: string): 'diff' | 'rules' | 'mcp' | 'other' {
+  if (key.startsWith(CACHE_KEY_PREFIX.diff)) return 'diff';
+  if (key.startsWith(CACHE_KEY_PREFIX.rules)) return 'rules';
+  if (key.startsWith(CACHE_KEY_PREFIX.mcp)) return 'mcp';
+  return 'other';
+}
+
 /**
  * 三级缓存管理器：组合 L1（内存）+ L2（磁盘）。
  *
@@ -310,6 +332,8 @@ export class CacheManager {
   private readonly enableL2: boolean;
   private hits = 0;
   private misses = 0;
+  private categoryHits: Record<'diff' | 'rules' | 'mcp', number> = { diff: 0, rules: 0, mcp: 0 };
+  private categoryMisses: Record<'diff' | 'rules' | 'mcp', number> = { diff: 0, rules: 0, mcp: 0 };
 
   constructor(options: CacheManagerOptions) {
     this.l1 = new L1MemoryCache();
@@ -337,12 +361,16 @@ export class CacheManager {
 
   /**
    * 读取缓存：先查 L1，未命中查 L2，命中 L2 时回填 L1。
-   * 自动累加 hits/misses。
+   * 自动累加 hits/misses，并按 key 前缀统计分类命中率。
    */
   get<T>(key: string): T | undefined {
+    const category = getCategory(key);
     // L1 命中
     if (this.l1.has(key)) {
       this.hits++;
+      if (category !== 'other') {
+        this.categoryHits[category]++;
+      }
       return this.l1.get<T>(key);
     }
     // L1 未命中，尝试 L2
@@ -351,10 +379,16 @@ export class CacheManager {
       // 回填 L1
       this.l1.set(key, v);
       this.hits++;
+      if (category !== 'other') {
+        this.categoryHits[category]++;
+      }
       return v;
     }
     // 全部未命中
     this.misses++;
+    if (category !== 'other') {
+      this.categoryMisses[category]++;
+    }
     return undefined;
   }
 
@@ -437,10 +471,34 @@ export class CacheManager {
     };
   }
 
+  /** 获取分类命中统计 */
+  getCategoryHitStats(): CategoryHitStats {
+    return {
+      diff: this.buildHitStats('diff'),
+      rules: this.buildHitStats('rules'),
+      mcp: this.buildHitStats('mcp'),
+    };
+  }
+
+  /** 构建单个分类的 HitStats */
+  private buildHitStats(category: 'diff' | 'rules' | 'mcp'): HitStats {
+    const hits = this.categoryHits[category];
+    const misses = this.categoryMisses[category];
+    const total = hits + misses;
+    return {
+      hits,
+      misses,
+      total,
+      hitRate: total > 0 ? hits / total : 0,
+    };
+  }
+
   /** 重置命中统计计数器 */
   resetHitStats(): void {
     this.hits = 0;
     this.misses = 0;
+    this.categoryHits = { diff: 0, rules: 0, mcp: 0 };
+    this.categoryMisses = { diff: 0, rules: 0, mcp: 0 };
   }
 
   /**
@@ -453,19 +511,29 @@ export class CacheManager {
     factory: () => T | Promise<T>,
     opts?: CacheSetOptions,
   ): T | Promise<T> {
+    const category = getCategory(key);
     // 先检查缓存命中
     if (this.l1.has(key)) {
       this.hits++;
+      if (category !== 'other') {
+        this.categoryHits[category]++;
+      }
       return this.l1.get<T>(key) as T;
     }
     if (this.enableL2 && this.l2.has(key)) {
       const v = this.l2.get<T>(key);
       this.l1.set(key, v);
       this.hits++;
+      if (category !== 'other') {
+        this.categoryHits[category]++;
+      }
       return v as T;
     }
     // 未命中，调用 factory
     this.misses++;
+    if (category !== 'other') {
+      this.categoryMisses[category]++;
+    }
     try {
       const result = factory();
       if (result instanceof Promise) {

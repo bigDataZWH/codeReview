@@ -283,13 +283,25 @@ export async function publishReview(options: PublishOptions): Promise<PublishRes
         await deleteIssueComment(options.owner, options.repo, options.prNumber, existing.summaryIssueCommentId, options.token);
       }
     }
-    return { inlineCount: 0, summaryUpdated: false, skipped: 0 };
+    const result = { inlineCount: 0, summaryUpdated: false, skipped: 0 };
+    await invokeAfterPublish(options, result);
+    return result;
   }
 
+  let result: PublishResult;
   if (mode === 'replace') {
-    return publishReviewReplace(options);
+    result = await publishReviewReplace(options);
   } else {
-    return publishReviewIncremental(options);
+    result = await publishReviewIncremental(options);
+  }
+
+  await invokeAfterPublish(options, result);
+  return result;
+}
+
+async function invokeAfterPublish(options: PublishOptions, result: PublishResult): Promise<void> {
+  if (options.afterPublish) {
+    await options.afterPublish(result, options.findings, { options });
   }
 }
 
