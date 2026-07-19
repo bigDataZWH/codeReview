@@ -9,5 +9,27 @@
       { "type": "regex", "pattern": "\\.innerHTML\\s*=", "message": "使用 innerHTML 存在 XSS 风险，应使用 textContent 或 DOMPurify" },
       { "type": "contains_any", "items": ["document.write", "v-html"], "message": "直接渲染 HTML 内容存在 XSS 风险" }
     ]
+  },
+  {
+    "id": "xss-dangerously-set-inner-html",
+    "name": "React dangerouslySetInnerHTML XSS 检测",
+    "severity": "high",
+    "category": "security",
+    "language": ["typescript", "javascript"],
+    "patterns": [
+      { "type": "regex", "pattern": "dangerouslySetInnerHTML", "message": "使用 dangerouslySetInnerHTML 存在 XSS 风险，需确保内容已通过 DOMPurify 等库消毒" },
+      { "type": "contains_any", "items": ["outerHTML =", "insertAdjacentHTML"], "message": "直接设置 HTML 内容存在 XSS 风险" }
+    ]
+  },
+  {
+    "id": "xss-unescaped-output",
+    "name": "未转义输出 XSS 检测",
+    "severity": "high",
+    "category": "security",
+    "patterns": [
+      { "type": "regex", "pattern": "\\{!!.*!\\}", "message": "Thymeleaf/JSP 使用 unescaped 表达式 {!! !!} 存在 XSS 风险" },
+      { "type": "contains_any", "items": ["<%-", "raw(", "|safe", "|raw"], "message": "模板使用未转义输出，存在 XSS 风险" },
+      { "type": "regex", "pattern": "HttpResponse\\s*\\.\\s*write\\s*\\(", "message": "直接 write 用户输入到 HTTP 响应存在 XSS 风险" }
+    ]
   }
 ]

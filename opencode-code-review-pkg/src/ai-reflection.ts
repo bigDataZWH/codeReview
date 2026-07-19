@@ -1,6 +1,16 @@
 import type { Finding, LLMProviderConfig } from './types.js';
 
 /**
+ * 迭代 7：AI 反思默认置信度阈值。
+ *
+ * - 历史默认值为 0.5
+ * - 迭代 7 调整为 0.6 以降低误报率
+ *
+ * 调用方仍可通过 reflectFindings 的 minConfidence 参数覆盖此默认值。
+ */
+export const DEFAULT_REFLECTION_THRESHOLD = 0.6;
+
+/**
  * 为单个 finding 构建反思评估的 prompt。
  */
 export function buildReflectionPrompt(finding: Finding): string {
@@ -158,6 +168,14 @@ function extractContent(data: unknown): string {
 }
 
 /**
+ * 迭代 7：LLM 调用默认超时时间（毫秒）。
+ *
+ * 当 LLMProviderConfig.timeout 未指定时使用此默认值，
+ * 确保 LLM 不可达时能快速失败，触发 reflectFindings 的降级路径。
+ */
+const DEFAULT_LLM_TIMEOUT_MS = 2000;
+
+/**
  * LLM Provider 适配器 — 调用 LLM API 获取反思评估。
  * 支持 OpenAI、Anthropic、Google 三种协议。
  */
@@ -220,21 +238,25 @@ export async function callLLM(prompt: string, config: LLMProviderConfig): Promis
     body: JSON.stringify(body),
   };
 
-  if (timeout !== undefined) {
-    // Node.js 18 内置 AbortSignal.timeout (Node 18.3+)
-    const controller = new AbortController();
-    setTimeout(() => controller.abort(), timeout);
-    (fetchOptions as Record<string, unknown>).signal = controller.signal;
+  // 迭代 7：始终设置超时，未指定时使用 DEFAULT_LLM_TIMEOUT_MS
+  // 确保 LLM 不可达时能快速失败，触发降级路径
+  const effectiveTimeout = timeout ?? DEFAULT_LLM_TIMEOUT_MS;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), effectiveTimeout);
+  (fetchOptions as Record<string, unknown>).signal = controller.signal;
+
+  try {
+    const response = await globalThis.fetch(url, fetchOptions);
+
+    if (!response.ok) {
+      throw new Error(`LLM API error: ${response.status} ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    return extractContent(data);
+  } finally {
+    clearTimeout(timer);
   }
-
-  const response = await globalThis.fetch(url, fetchOptions);
-
-  if (!response.ok) {
-    throw new Error(`LLM API error: ${response.status} ${response.statusText}`);
-  }
-
-  const data = await response.json();
-  return extractContent(data);
 }
 
 /**
@@ -242,7 +264,7 @@ export async function callLLM(prompt: string, config: LLMProviderConfig): Promis
  *
  * @param findings 待过滤的 findings
  * @param config LLM 配置
- * @param minConfidence 最低置信度阈值，默认 0.5
+ * @param minConfidence 最低置信度阈值，默认 DEFAULT_REFLECTION_THRESHOLD (0.6)
  * @returns 过滤后的 findings
  */
 export async function reflectFindings(
@@ -254,7 +276,7 @@ export async function reflectFindings(
     return [];
   }
 
-  const threshold = minConfidence ?? 0.5;
+  const threshold = minConfidence ?? DEFAULT_REFLECTION_THRESHOLD;
 
   try {
     const prompt = buildBatchReflectionPrompt(findings);

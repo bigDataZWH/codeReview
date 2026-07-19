@@ -223,6 +223,95 @@ export const BUILTIN_FP_RULES: FalsePositiveRule[] = [
       );
     },
   },
+  // 迭代 7 新增：JSDoc/注释建议类低价值发现
+  {
+    id: 'builtin-jsdoc-comment-suggestion',
+    name: 'JSDoc/注释添加建议',
+    match: (f) => {
+      const msg = f.message.toLowerCase();
+      return (
+        f.severity === 'low' &&
+        f.confidence < HIGH_CONFIDENCE_THRESHOLD &&
+        (
+          msg.includes('jsdoc') ||
+          msg.includes('添加注释') ||
+          msg.includes('添加文档') ||
+          msg.includes('add comments') ||
+          msg.includes('add a comment') ||
+          msg.includes('consider adding comments') ||
+          msg.includes('missing comments') ||
+          msg.includes('document this')
+        )
+      );
+    },
+  },
+  // 迭代 7 新增：命名风格建议类低价值发现
+  {
+    id: 'builtin-naming-style-suggestion',
+    name: '命名风格建议',
+    match: (f) => {
+      const msg = f.message.toLowerCase();
+      return (
+        f.severity === 'low' &&
+        f.confidence < HIGH_CONFIDENCE_THRESHOLD &&
+        (
+          msg.includes('naming convention') ||
+          msg.includes('naming style') ||
+          msg.includes('camelcase') ||
+          msg.includes('pascalcase') ||
+          msg.includes('snake_case') ||
+          msg.includes('variable name should') ||
+          msg.includes('name should be more descriptive') ||
+          msg.includes('function name should') ||
+          msg.includes('should follow naming')
+        )
+      );
+    },
+  },
+  // 迭代 7 新增：import 排序建议类低价值发现
+  {
+    id: 'builtin-import-sort-suggestion',
+    name: 'import 排序建议',
+    match: (f) => {
+      const msg = f.message.toLowerCase();
+      return (
+        f.severity === 'low' &&
+        f.confidence < HIGH_CONFIDENCE_THRESHOLD &&
+        (
+          msg.includes('imports should be sorted') ||
+          msg.includes('import order') ||
+          msg.includes('import sort') ||
+          msg.includes('sort imports') ||
+          msg.includes('imports are not sorted') ||
+          msg.includes('import statements should')
+        )
+      );
+    },
+  },
+  // 迭代 7 新增：代码格式化建议类低价值发现（prettier/eslint 风格）
+  {
+    id: 'builtin-code-formatting-suggestion',
+    name: '代码格式化建议（prettier/eslint 风格）',
+    match: (f) => {
+      const msg = f.message.toLowerCase();
+      return (
+        f.severity === 'low' &&
+        f.confidence < HIGH_CONFIDENCE_THRESHOLD &&
+        (
+          msg.includes('use single quotes') ||
+          msg.includes('use double quotes') ||
+          msg.includes('missing semicolon') ||
+          msg.includes('missing comma') ||
+          msg.includes('trailing comma') ||
+          msg.includes('indentation') ||
+          msg.includes('prettier') ||
+          msg.includes('eslint') ||
+          msg.includes('expected indentation') ||
+          msg.includes('line is too long')
+        )
+      );
+    },
+  },
 ];
 
 /**
@@ -491,4 +580,170 @@ export function truncateFindings(findings: Finding[], maxCount: number): Finding
     source: 'rule' as const,
   });
   return truncated;
+}
+
+// ==================== 迭代 7：severity-based filtering ====================
+
+/** severity-based filter 默认最低保留级别（过滤 info） */
+const DEFAULT_MIN_SEVERITY = 'low';
+
+/**
+ * 创建基于 severity 的过滤规则工厂函数。
+ *
+ * 默认 minSeverity='low'，即过滤 info 级别，保留 low 及以上。
+ * 传入 'medium' 则过滤 info + low，保留 medium 及以上。
+ * 传入 'high' 则过滤 info + low + medium，保留 high 及以上。
+ *
+ * @param minSeverity 最低保留级别（默认 'low'）
+ * @returns FalsePositiveRule 实例，match 返回 true 表示该 finding 应被过滤
+ */
+export function createSeverityBasedFilter(minSeverity: string = DEFAULT_MIN_SEVERITY): FalsePositiveRule {
+  const minLevel = SEVERITY_ORDER[minSeverity] ?? SEVERITY_ORDER[DEFAULT_MIN_SEVERITY];
+  return {
+    id: 'severity-based-filter',
+    name: `severity-based filter (min: ${minSeverity})`,
+    match: (f) => {
+      const level = SEVERITY_ORDER[f.severity] ?? 0;
+      // 严重级别低于 minSeverity 的 finding 被过滤
+      return level < minLevel;
+    },
+  };
+}
+
+// ==================== 迭代 7：可配置的过滤策略 ====================
+
+/**
+ * 可配置的过滤策略。
+ *
+ * 通过组合多个过滤步骤实现精确控制：
+ * - stripInfoSeverity：是否过滤 info 级别 findings
+ * - minConfidence：最低置信度阈值，低于此值的 finding 被过滤
+ * - stripLowValueFindings：是否过滤低价值发现（应用低价值模式，无视置信度）
+ * - customRules：自定义过滤规则（仅应用这些规则，不与 BUILTIN_FP_RULES 叠加）
+ */
+export interface FilterStrategy {
+  /** 是否过滤 info 级别 findings */
+  stripInfoSeverity?: boolean;
+  /** 最低置信度阈值，低于此值的 finding 被过滤 */
+  minConfidence?: number;
+  /** 是否过滤低价值 findings（应用低价值模式，无视置信度） */
+  stripLowValueFindings?: boolean;
+  /** 自定义过滤规则（仅应用这些规则） */
+  customRules?: FalsePositiveRule[];
+}
+
+/**
+ * 判断 finding 是否属于低价值发现（无视置信度）。
+ *
+ * 低价值发现包括：JSDoc/注释建议、命名风格建议、import 排序建议、代码格式化建议。
+ * 与 BUILTIN_FP_RULES 不同，此函数不检查 confidence，用于 stripLowValueFindings 策略。
+ */
+function isLowValueFinding(f: Finding): boolean {
+  // 仅对 low 级别 finding 生效，避免误过滤高严重度真实问题
+  if (f.severity !== 'low') return false;
+  const msg = f.message.toLowerCase();
+  // JSDoc/注释建议
+  if (
+    msg.includes('jsdoc') ||
+    msg.includes('添加注释') ||
+    msg.includes('添加文档') ||
+    msg.includes('add comments') ||
+    msg.includes('add a comment') ||
+    msg.includes('consider adding comments') ||
+    msg.includes('missing comments') ||
+    msg.includes('document this')
+  ) {
+    return true;
+  }
+  // 命名风格建议
+  if (
+    msg.includes('naming convention') ||
+    msg.includes('naming style') ||
+    msg.includes('camelcase') ||
+    msg.includes('pascalcase') ||
+    msg.includes('snake_case') ||
+    msg.includes('variable name should') ||
+    msg.includes('name should be more descriptive') ||
+    msg.includes('function name should') ||
+    msg.includes('should follow naming')
+  ) {
+    return true;
+  }
+  // import 排序建议
+  if (
+    msg.includes('imports should be sorted') ||
+    msg.includes('import order') ||
+    msg.includes('import sort') ||
+    msg.includes('sort imports') ||
+    msg.includes('imports are not sorted') ||
+    msg.includes('import statements should')
+  ) {
+    return true;
+  }
+  // 代码格式化建议（prettier/eslint 风格）
+  if (
+    msg.includes('use single quotes') ||
+    msg.includes('use double quotes') ||
+    msg.includes('missing semicolon') ||
+    msg.includes('missing comma') ||
+    msg.includes('trailing comma') ||
+    msg.includes('indentation') ||
+    msg.includes('prettier') ||
+    msg.includes('eslint') ||
+    msg.includes('expected indentation') ||
+    msg.includes('line is too long')
+  ) {
+    return true;
+  }
+  // TODO/FIXME 注释也属于低价值（与 BUILTIN_FP_RULES 重叠，但无视置信度）
+  if (msg.includes('todo') || msg.includes('fixme')) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * 按可配置策略过滤 findings。
+ *
+ * 过滤顺序：
+ * 1. stripInfoSeverity：先过滤 info 级别
+ * 2. minConfidence：再过滤低置信度
+ * 3. stripLowValueFindings：应用低价值模式过滤（无视置信度）
+ * 4. customRules：应用自定义规则
+ *
+ * @param findings 待过滤的 findings
+ * @param strategy 过滤策略
+ * @returns 过滤后的 findings
+ */
+export function filterWithStrategy(findings: Finding[], strategy: FilterStrategy): Finding[] {
+  let result = findings;
+
+  // 步骤 1：过滤 info 级别
+  if (strategy.stripInfoSeverity) {
+    result = result.filter((f) => f.severity !== 'info');
+  }
+
+  // 步骤 2：过滤低置信度
+  if (strategy.minConfidence !== undefined) {
+    const min = strategy.minConfidence;
+    result = result.filter((f) => f.confidence >= min);
+  }
+
+  // 步骤 3：过滤低价值发现（无视置信度，仅看 severity + 消息模式）
+  if (strategy.stripLowValueFindings) {
+    result = result.filter((f) => !isLowValueFinding(f));
+  }
+
+  // 步骤 4：应用自定义规则（仅 customRules，不叠加 BUILTIN_FP_RULES）
+  if (strategy.customRules && strategy.customRules.length > 0) {
+    const rules = strategy.customRules;
+    result = result.filter((finding) => {
+      for (const rule of rules) {
+        if (rule.match(finding)) return false;
+      }
+      return true;
+    });
+  }
+
+  return result;
 }

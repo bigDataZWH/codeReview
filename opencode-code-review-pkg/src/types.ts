@@ -128,6 +128,48 @@ export interface PipelineConfig {
   mcpEnabled?: boolean;
   mcpEndpoint?: string;
   dryRun?: boolean;
+  /** 缓存管理器实例（迭代 4：缓存集成） */
+  cache?: import('./cache.js').CacheManager;
+  /** 缓存相关选项（迭代 4） */
+  cacheOptions?: PipelineCacheOptions;
+  /** 大 PR 分批处理选项（迭代 5） */
+  batching?: BatchOptions;
+  /** 上下文压缩选项（迭代 6） */
+  compression?: CompressionOptions;
+}
+
+/** 管道缓存选项 */
+export interface PipelineCacheOptions {
+  /** 规则版本号，变更后使规则匹配缓存失效（默认 'v1'） */
+  ruleVersion?: string;
+  /** diff 缓存 TTL（毫秒），不设置则永久 */
+  diffTtlMs?: number;
+  /** MCP 上下文缓存 TTL（毫秒） */
+  mcpTtlMs?: number;
+}
+
+/** 大 PR 分批处理选项（迭代 5） */
+export interface BatchOptions {
+  /** 触发分批处理的文件数阈值，默认 30 */
+  threshold?: number;
+  /** 每批文件数，默认 10 */
+  batchSize?: number;
+  /** 是否启用优先级排序，默认 true */
+  prioritize?: boolean;
+  /** 是否并行执行批次，默认 false（顺序执行） */
+  parallel?: boolean;
+}
+
+/** 上下文压缩选项（迭代 6） */
+export interface CompressionOptions {
+  /** 是否启用上下文压缩 */
+  enabled?: boolean;
+  /** 保留关键行（add/delete）周围的上下文行数 */
+  contextLines?: number;
+  /** 是否移除注释 */
+  stripComments?: boolean;
+  /** 是否移除空行 */
+  stripBlankLines?: boolean;
 }
 
 export interface PipelineResult {
@@ -139,6 +181,22 @@ export interface PipelineResult {
   findings?: Finding[];
   processedFindings?: Finding[];
   durationMs?: number;
+  /** 分批处理元信息（迭代 5，仅大 PR 触发分批时存在） */
+  batchInfo?: BatchInfo;
+}
+
+/** 分批处理元信息（迭代 5） */
+export interface BatchInfo {
+  /** 实际批次数 */
+  batchesCount: number;
+  /** 总文件数 */
+  totalFiles: number;
+  /** 每批文件数 */
+  batchSize: number;
+  /** 是否启用了优先级排序 */
+  prioritized: boolean;
+  /** 失败批次数 */
+  failedBatches: number;
 }
 
 /** MCP 适配器 */

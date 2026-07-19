@@ -1,0 +1,35 @@
+[
+  {
+    "id": "sql-injection-string-concat",
+    "name": "SQL 注入 - 字符串拼接",
+    "severity": "high",
+    "category": "security",
+    "patterns": [
+      { "type": "regex", "pattern": "(execute|query|exec)\\s*\\(\\s*[\"'].*\\+", "message": "检测到字符串拼接构造 SQL，应使用参数化查询" },
+      { "type": "regex", "pattern": "SELECT\\s+.*\\+\\s*\\w+", "message": "SQL 语句通过字符串拼接构造，存在注入风险" },
+      { "type": "contains_any", "items": ["String sql =", "const sql =", "sql :=", "let sql ="], "message": "直接赋值 SQL 字符串，请确认是否参数化" }
+    ]
+  },
+  {
+    "id": "sql-injection-format",
+    "name": "SQL 注入 - format 拼接",
+    "severity": "high",
+    "category": "security",
+    "patterns": [
+      { "type": "regex", "pattern": "(execute|query|exec)\\s*\\(\\s*[\"'].*\\{\\d*\\}", "message": "检测到使用 format/占位符拼接 SQL，应使用参数化查询" },
+      { "type": "regex", "pattern": "String\\.format\\s*\\(\\s*[\"']SELECT", "message": "String.format 拼接 SQL 语句，存在注入风险" },
+      { "type": "regex", "pattern": "sprintf\\s*\\(\\s*[\"']SELECT", "message": "sprintf 拼接 SQL 语句，存在注入风险" }
+    ]
+  },
+  {
+    "id": "sql-injection-template-literal",
+    "name": "SQL 注入 - 模板字符串拼接",
+    "severity": "high",
+    "category": "security",
+    "language": ["typescript", "javascript"],
+    "patterns": [
+      { "type": "regex", "pattern": "(execute|query|exec)\\s*\\(\\s*`.*\\$\\{", "message": "模板字符串拼接 SQL，应使用参数化查询" },
+      { "type": "regex", "pattern": "f[\"']SELECT.*\\{[^}]+\\}", "message": "f-string 拼接 SQL，存在注入风险" }
+    ]
+  }
+]
