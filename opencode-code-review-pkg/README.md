@@ -121,6 +121,8 @@ console.log(`保留 ${clean.length} 条 findings`);
 
 更多示例参见 [SPEC.md](./SPEC.md) 与 `tests/` 目录。
 
+👉 **OpenCode 用户**：请阅读 [OpenCode 快速集成指南](./docs/quickstart.md)，5 分钟完成集成并触发首次审查。
+
 ---
 
 ## 架构概览
@@ -231,13 +233,14 @@ opencode-config/
 | `reflector` | 继承顶层 `model` | 对汇总 findings 做统一置信度评估 |
 
 ```jsonc
-// opencode.jsonc 片段
+// opencode.jsonc 片段（顶层 model + agent 继承）
 {
+  "$schema": "https://opencode.ai/config.json",
+  "model": "anthropic/claude-sonnet-4-5",        // 顶层主模型，所有 agent 继承
   "agent": {
     "code-reviewer": {
       "description": "通用代码审查 Agent",
-      "model": "anthropic/claude-sonnet-4-5",
-      "tools": { "write": false, "edit": false }
+      "tools": { "write": false, "edit": false }  // agent 内不再声明 model
     }
     // ... 其余 Agent
   },
