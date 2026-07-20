@@ -50,7 +50,7 @@
 
 ```
 .
-├── opencode-code-review-pkg/        # 主包
+├── code-review-pkg/        # 主包
 │   ├── src/
 │   │   ├── diff-parser.ts           # Git diff 解析为 FileDiff[]
 │   │   ├── file-filter.ts           # 过滤 / 分组 / 打包
@@ -85,7 +85,7 @@
 │   ├── tests/                       # 单元 + 集成测试
 │   ├── .github/workflows/           # CI 工作流
 │   └── SPEC.md                      # 技术规格说明书
-├── opencode-code-review/            # 静态 HTML 报告查看器
+├── code-review/            # 静态 HTML 报告查看器
 └── README.md
 ```
 
@@ -121,10 +121,10 @@ Git Diff 文本
 
 ```bash
 # 全局安装（用于 CLI）
-npm install -g opencode-code-review
+npm install -g code-review
 
 # 或本地开发
-cd opencode-code-review-pkg
+cd code-review-pkg
 npm install
 npm run build
 ```
@@ -133,22 +133,22 @@ npm run build
 
 ```bash
 # 解析 diff 为结构化 JSON
-git diff | opencode-code-review parse
+git diff | code-review parse
 
 # 生成 review prompt（管道 dry-run 输出）
-git diff | opencode-code-review review
+git diff | code-review review
 
 # 安全审查
-git diff | opencode-code-review security-review
+git diff | code-review security-review
 
 # 全量扫描
-git diff | opencode-code-review scan
+git diff | code-review scan
 
 # 影响范围分析
-git diff | opencode-code-review impact
+git diff | code-review impact
 
 # 发布评论到 GitHub PR
-opencode-code-review publish \
+code-review publish \
   --owner bigDataZWH \
   --repo codeReview \
   --pr 42 \
@@ -180,7 +180,7 @@ import {
   publishReview,
   loadRules,
   DEFAULT_FILTER_CONFIG,
-} from 'opencode-code-review';
+} from 'code-review';
 
 // 1. 运行管道（确定性部分）
 const result = await runPipeline(diffText, {
@@ -207,7 +207,7 @@ await publishReview({
 ### 管道中间件
 
 ```typescript
-import { runPipelineWithMiddleware } from 'opencode-code-review';
+import { runPipelineWithMiddleware } from 'code-review';
 
 const result = await runPipelineWithMiddleware(diffText, config, [
   {
@@ -226,7 +226,7 @@ const result = await runPipelineWithMiddleware(diffText, config, [
 
 ## 审查规则
 
-规则以 JSON 文件形式存放在 [review-rules/](opencode-code-review-pkg/review-rules)，支持 5 种匹配方式：
+规则以 JSON 文件形式存放在 [review-rules/](code-review-pkg/review-rules)，支持 5 种匹配方式：
 
 | 类型 | 说明 |
 | --- | --- |
@@ -265,7 +265,7 @@ const result = await runPipelineWithMiddleware(diffText, config, [
 
 ## OpenCode 集成
 
-[opencode-config/](opencode-code-review-pkg/opencode-config) 目录提供完整的 OpenCode 集成：
+[opencode-config/](code-review-pkg/opencode-config) 目录提供完整的 OpenCode 集成：
 
 ### Agent 定义（`opencode.jsonc`）
 
@@ -291,13 +291,13 @@ const result = await runPipelineWithMiddleware(diffText, config, [
 
 ### 自定义命令
 
-`review` / `review-pr` / `scan` / `security-review` 四个命令封装常用审查流程，详情见 [`.opencode/commands/`](opencode-code-review-pkg/opencode-config/.opencode/commands)。
+`review` / `review-pr` / `scan` / `security-review` 四个命令封装常用审查流程，详情见 [`.opencode/commands/`](code-review-pkg/opencode-config/.opencode/commands)。
 
 ## GitHub Actions 集成
 
 仓库内置两个工作流：
 
-### 1. 通用代码审查（[code-review.yml](opencode-code-review-pkg/.github/workflows/code-review.yml)）
+### 1. 通用代码审查（[code-review.yml](code-review-pkg/.github/workflows/code-review.yml)）
 
 ```yaml
 on:
@@ -310,7 +310,7 @@ permissions:
 
 触发：PR 打开或同步时，对所有变更文件运行 review 管道。
 
-### 2. 安全专项审查（[security-review.yml](opencode-code-review-pkg/.github/workflows/security-review.yml)）
+### 2. 安全专项审查（[security-review.yml](code-review-pkg/.github/workflows/security-review.yml)）
 
 触发：PR 涉及 `src/**` / `lib/**` / `api/**` / `internal/**` 路径时，运行 security-review 管道。
 
@@ -322,7 +322,7 @@ permissions:
 ## 测试
 
 ```bash
-cd opencode-code-review-pkg
+cd code-review-pkg
 
 # 运行全部测试
 npm test
@@ -337,12 +337,12 @@ npm run test:coverage
 npm run lint
 ```
 
-测试覆盖每个模块的纯函数（单元测试）以及管道端到端流程（集成测试），fixtures 位于 [tests/fixtures/](opencode-code-review-pkg/tests/fixtures)。
+测试覆盖每个模块的纯函数（单元测试）以及管道端到端流程（集成测试），fixtures 位于 [tests/fixtures/](code-review-pkg/tests/fixtures)。
 
 ## 开发
 
 ```bash
-cd opencode-code-review-pkg
+cd code-review-pkg
 
 # 安装依赖
 npm install
@@ -354,7 +354,7 @@ npm run build
 npm run ci
 ```
 
-**关键常量**（[constants.ts](opencode-code-review-pkg/src/constants.ts)）：
+**关键常量**（[constants.ts](code-review-pkg/src/constants.ts)）：
 
 | 常量 | 默认值 | 说明 |
 | --- | --- | --- |

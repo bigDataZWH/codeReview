@@ -1,0 +1,34 @@
+name: AI Security Review
+on:
+  pull_request:
+    types: [opened, synchronize]
+    paths:
+      - 'src/**'
+      - 'lib/**'
+      - 'api/**'
+      - 'internal/**'
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  security-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install code-review
+        run: npm install -g code-review
+
+      - name: Run Security Review
+        run: |
+          git diff origin/${{ github.base_ref }}...HEAD | \
+          code-review review --mode security > security-results.json 2>&1 || true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
