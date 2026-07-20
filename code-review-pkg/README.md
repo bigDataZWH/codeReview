@@ -5,8 +5,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-blue)](./package.json)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue)](./tsconfig.json)
-[![Test](https://img.shields.io/badge/tests-1092%20passed-brightgreen)](#测试)
-[![Coverage](https://img.shields.io/badge/coverage-96.38%25-brightgreen)](#测试)
+[![Test](https://img.shields.io/badge/tests-2583%20passed-brightgreen)](#测试)
+[![Coverage](https://img.shields.io/badge/coverage-90%25+-brightgreen)](#测试)
 
 `code-review` 在 AI 与 PR 之间架设一条**确定性管道**：把 git diff 解析、文件过滤、规则匹配、上下文增强、Prompt 拼装、误报过滤、评论发布等环节全部固化为可测试、可缓存、可编排的代码。AI 只在"该它说话的时候"说话，从而把误报率、Token 成本、运行时延压在工程可控范围内。
 
@@ -24,6 +24,8 @@
 - [核心模块](#核心模块)
 - [OpenCode 配置](#opencode-配置)
 - [自定义规则](#自定义规则)
+- [CLI 命令详解](#cli-命令详解)
+- [高级功能](#高级功能)
 - [CI/CD 集成](#cicd-集成)
 - [测试](#测试)
 - [贡献指南](#贡献指南)
@@ -34,19 +36,33 @@
 ## 特性
 
 - **确定性管道**：把 diff 解析 → 文件过滤 → 规则匹配 → Prompt 构建 → 后处理 → 评论发布固化为可测试的纯函数链；任意阶段都可单独调用、缓存或替换。
-- **规则引擎**：基于 YAML/JSON 声明规则，内置 `regex`、`contains_any`、`contains_all`、`line_count_gt`、`file_size_gt` 五种匹配器；支持按语言、按严重级别、按目录过滤。
-- **三阶段后处理**：①行号修正器 (Locator) 把 AI 给出的偏移行号 clamp 回真实 hunk；②误报硬规则过滤器 (FalsePositiveFilter) 内置 17 条预编译正则规则；③IoU 去重器 (Deduplicator) 防止 CI 增量场景重复发评论。
-- **知识图谱集成**：通过 MCP 协议接入 `code-review-graph`，自动检索调用链 (caller/callee) 与测试覆盖，给出爆炸半径 (blast radius) 与风险评分；MCP 不可用时降级为 grep 全文检索。
-- **反馈闭环**：`feedback` 模块记录人工标注的误报，分析误报模式 (FalsePositivePattern)，输出规则调优建议 (autoTuneRules)；`.opencode-review-ignore` 支持细粒度忽略配置。
-- **多 Agent 编排**：`orchestrator` 模块以 DAG 描述审查会话，支持 `code-reviewer` / `security-reviewer` / `impact-analyzer` / `reflector` 四种 Agent 协作；内置 `withRetry`、`withFallback`、`callModelWithTimeout`、`batchProcess` 等弹性能力。
-- **AI 反思**：`ai-reflection` 调用轻量模型对汇总后的 findings 做统一置信度评估，过滤低置信结果，自动校准 prompt。
-- **三级缓存**：L1 内存 (LRU) + L2 磁盘 (持久化) + 智能失效策略，对 diff 解析、规则匹配、MCP 上下文按内容哈希缓存。
-- **Token 成本优化**：`token-optimizer` 估算 Token 数与成本，按复杂度选择模型层级 (Haiku / Sonnet / Opus)，自动压缩上下文并在超出预算时截断。
-- **状态持久化**：`state` 模块管理审查会话状态机，支持断点续审、历史趋势查询与度量摘要生成。
-- **度量与仪表盘**：`metrics` 模块统一收集覆盖、质量、成本、效率四类指标，输出趋势桶 (TrendBucket) 与仪表盘数据 (DashboardData)。
-- **渐进式输出**：`progress` 模块以事件流形式发布 `start` / `fileStart` / `fileComplete` / `fileError` / `complete` 事件，方便长 PR 实时反馈。
+- **规则引擎**：基于 YAML/JSON 声明规则，内置 `regex`、`contains_any`、`contains_all`、`line_count_gt`、`file_size_gt` 五种匹配器；支持按语言、按严重级别、按目录过滤；支持规则定制与禁用。
+- **三阶段后处理**：①行号修正器 (Locator) 把 AI 给出的偏移行号 clamp 回真实 hunk；②误报硬规则过滤器 (FalsePositiveFilter) 内置 17 条预编译正则规则；③IoU 去重器 (Deduplicator) 防止 CI 增量场景重复发评论；④智能自愈 (SelfHealer) 自动修复常见问题。
+- **知识图谱集成**：通过 MCP 协议接入 `code-review-graph`，自动检索调用链 (caller/callee) 与测试覆盖，给出爆炸半径 (blast radius) 与风险评分；MCP 不可用时降级为 grep 全文检索；大 PR 时自动启用。
+- **反馈闭环**：`feedback` 模块记录人工标注的误报，分析误报模式 (FalsePositivePattern)，输出规则调优建议 (autoTuneRules)；`.reviewignore` 支持细粒度忽略配置；上下文学习器从反馈中持续优化。
+- **多 Agent 编排**：`orchestrator` 模块以 DAG 描述审查会话，支持 `code-reviewer` / `security-reviewer` / `impact-analyzer` / `reflector` 四种 Agent 协作；三层 DAG 编排（并行 → 串联 → 聚合）；内置 `withRetry`、`withFallback`、`callModelWithTimeout`、`batchProcess` 等弹性能力。
+- **AI 反思**：`ai-reflection` 调用轻量模型对汇总后的 findings 做统一置信度评估，过滤低置信结果，自动校准 prompt；模型路由器基于复杂度选择合适模型。
+- **三级缓存**：L1 内存 (LRU) + L2 磁盘 (持久化) + 智能失效策略，对 diff 解析、规则匹配、MCP 上下文按内容哈希缓存；缓存命中统计实时可见。
+- **Token 成本优化**：`token-optimizer` 估算 Token 数与成本，按复杂度选择模型层级 (Haiku / Sonnet / Opus)，自动压缩上下文并在超出预算时截断；CJK 字符加权算法。
+- **状态持久化**：`state` 模块管理审查会话状态机，支持断点续审、历史趋势查询与度量摘要生成；增量审查只分析变更文件。
+- **度量与仪表盘**：`metrics` 模块统一收集覆盖、质量、成本、效率四类指标，输出趋势桶 (TrendBucket) 与仪表盘数据 (DashboardData)；支持 SARIF/HTML/Markdown 多格式导出。
+- **渐进式输出**：`progress` 模块以事件流形式发布 `start` / `fileStart` / `fileComplete` / `fileError` / `complete` 事件，方便长 PR 实时反馈；支持 SSE 流式输出。
 - **初始化向导**：`init-wizard` 根据语言、审查强度、部署模式生成开箱即用的 `opencode.jsonc` 与规则集。
-- **CLI 一把梭**：内置 `parse / review / security-review / scan / impact / publish` 六个子命令，可直接接入 GitHub Actions。
+- **增量审查**：`--incremental` 模式只分析上次审查后变更的文件，跳过未变更文件，显著提升审查效率。
+- **智能预检**：自动检测 trivial changes（仅空白/格式/注释变更），跳过不必要的 LLM 调用。
+- **并行调优**：动态调整并发度，基于文件大小/数量/CPU 核数自动优化批处理性能。
+- **RBAC 权限**：支持 admin/reviewer/viewer 三级角色权限检查。
+- **审计日志**：记录所有审查操作（用户/时间戳/命令/findings），支持查询与导出。
+- **合规检查**：支持 OWASP Top 10 / CWE Top 25 标准合规扫描。
+- **交互式 TUI**：`--tui` 模式提供终端交互式导航，支持浏览、过滤、排序 findings。
+- **彩色输出**：按严重度着色（critical=红, high=黄, medium=蓝, low=绿, info=灰），支持 `--no-color` 禁用。
+- **结果导出**：支持 JSON/Markdown/SARIF/HTML 四种格式，可输出到文件或标准输出。
+- **Webhook 通知**：审查完成后自动推送通知到配置的 Webhook URL，支持多种事件类型。
+- **REST API**：`serve` 命令启动 HTTP API 服务器，提供审查、findings、健康检查、metrics 接口。
+- **链路追踪**：OpenTelemetry 风格的追踪，记录每个管道步骤的耗时与依赖关系。
+- **性能剖析**：`--profile` 模式输出性能报告，包含内存使用与 CPU 耗时统计。
+- **告警通知**：支持 Slack/Email/PagerDuty 多渠道告警，基于严重度阈值触发。
+- **CLI 一把梭**：内置 `parse / review / security-review / scan / impact / reflect / publish / serve / audit / compliance / alert / rules / metrics / dashboard / feedback` 十五个子命令，可直接接入 GitHub Actions。
 
 ---
 
@@ -171,17 +187,40 @@ console.log(`保留 ${clean.length} 条 findings`);
 | **mcp-adapter** | `src/mcp-adapter.ts` | 通过 MCP 调用 `code-review-graph`，检索调用链与爆炸半径；不可用时降级为 grep |
 | **post-processor** | `src/post-processor.ts` | 三阶段后处理：行号修正 / 误报过滤 / IoU 去重 |
 | **ai-reflection** | `src/ai-reflection.ts` | 调用轻量模型对 findings 做置信度评估，过滤低置信结果 |
-| **pipeline** | `src/pipeline.ts` | 串联上述模块的主流程；支持中间件、批量、缓存 |
+| **pipeline** | `src/pipeline.ts` | 串联上述模块的主流程；支持中间件、批量、缓存、分批处理 |
 | **state** | `src/state.ts` | 会话状态机 + findings 持久化 + 断点续审 + 趋势统计 |
-| **cache** | `src/cache.ts` | L1 内存 + L2 磁盘三级缓存，按内容哈希命中 |
+| **cache** | `src/cache.ts` | L1 内存 + L2 磁盘三级缓存，按内容哈希命中；缓存命中统计 |
 | **feedback** | `src/feedback.ts` | 反馈采集、误报模式分析、忽略配置、规则调优建议 |
-| **orchestrator** | `src/orchestrator.ts` | DAG 编排、`withRetry` / `withFallback` / `batchProcess` |
-| **comment-publisher** | `src/comment-publisher.ts` | 发布 PR inline 评论、sticky summary、incremental 模式 |
+| **orchestrator** | `src/orchestrator.ts` | DAG 编排、`withRetry` / `withFallback` / `batchProcess`；并行调优 |
+| **comment-publisher** | `src/comment-publisher.ts` | 发布 PR inline 评论、sticky summary、incremental 模式；afterPublish 钩子 |
 | **prompt-builder** | `src/prompt-builder.ts` | 构建 review/security/impact/scan 四类 prompt，支持模板变量与变体 A/B |
-| **token-optimizer** | `src/token-optimizer.ts` | Token 数与成本估算、按复杂度选模型、上下文压缩 |
+| **token-optimizer** | `src/token-optimizer.ts` | Token 数与成本估算、按复杂度选模型、上下文压缩；CJK 加权算法 |
 | **metrics** | `src/metrics.ts` | 覆盖/质量/成本/效率四类度量，输出趋势桶与仪表盘数据 |
 | **progress** | `src/progress.ts` | 渐进式事件流：`start` / `fileStart` / `fileComplete` / `complete` |
-| **init-wizard** | `src/init-wizard.ts` | 交互式生成 `opencode.jsonc` 与初始规则集 |
+| **init-wizard** | `src/init-wizard.ts` | 交互式生成 `opencode.jsonc` 与初始规则集；MCP 自动启用逻辑 |
+| **incremental-review** | `src/incremental-review.ts` | 增量审查：加载上次状态、计算增量 diff、合并 findings |
+| **ignore-manager** | `src/ignore-manager.ts` | 忽略机制：`.reviewignore` 文件解析、glob 匹配 |
+| **rule-customizer** | `src/rule-customizer.ts` | 规则定制：加载自定义规则、覆盖规则参数、禁用/启用规则 |
+| **precheck** | `src/precheck.ts` | 智能预检：检测 trivial changes（空白/格式/注释） |
+| **parallel-tuner** | `src/parallel-tuner.ts` | 并行调优：动态调整并发度，基于文件大小/数量/CPU 核数 |
+| **streaming-output** | `src/streaming-output.ts` | 流式输出：SSE 事件流，支持 start/file_start/file_complete/complete/error |
+| **context-learner** | `src/context-learner.ts` | 上下文学习：从反馈中学习，优化规则权重 |
+| **model-router** | `src/model-router.ts` | 模型路由：基于复杂度选择合适 LLM 模型 |
+| **self-healer** | `src/self-healer.ts` | 智能自愈：自动修复常见代码问题 |
+| **rbac** | `src/rbac.ts` | RBAC 权限：admin/reviewer/viewer 三级角色权限检查 |
+| **audit-logger** | `src/audit-logger.ts` | 审计日志：记录所有审查操作，支持查询与导出 |
+| **compliance-checker** | `src/compliance-checker.ts` | 合规检查：OWASP Top 10 / CWE Top 25 标准扫描 |
+| **tui** | `src/tui.ts` | 交互式 TUI：终端交互式导航，支持浏览/过滤/排序 findings |
+| **color-output** | `src/color-output.ts` | 彩色输出：按严重度着色，支持 `--no-color` 禁用 |
+| **result-exporter** | `src/result-exporter.ts` | 结果导出：JSON/Markdown/SARIF/HTML 四种格式 |
+| **webhook-notifier** | `src/webhook-notifier.ts` | Webhook 通知：审查完成后推送通知到配置的 URL |
+| **api-server** | `src/api-server.ts` | REST API：HTTP 服务器，提供审查/findings/健康检查/metrics 接口 |
+| **tracing** | `src/tracing.ts` | 链路追踪：OpenTelemetry 风格的追踪，记录每个管道步骤 |
+| **profiler** | `src/profiler.ts` | 性能剖析：内存使用与 CPU 耗时统计 |
+| **alert-notifier** | `src/alert-notifier.ts` | 告警通知：Slack/Email/PagerDuty 多渠道告警 |
+| **token-counter** | `src/token-counter.ts` | Token 计数：字符级加权算法，CJK 字符精确估算 |
+| **yaml-lite** | `src/yaml-lite.ts` | 轻量 YAML 解析器：共享的最小 YAML 解析 |
+| **glob** | `src/glob.ts` | Glob 匹配：共享的 glob 转正则表达式
 
 辅助模块：
 
@@ -357,6 +396,189 @@ excludePatterns:
 
 仓库已内置 8 条规则：`hardcoded-secret` / `npe` / `path-traversal` / `quality` / `security` / `sql-injection` / `thread-safety` / `xss`，可作为模板。
 
+### 规则管理命令
+
+通过 `rules` 命令管理规则的启用/禁用/覆盖：
+
+```bash
+# 列出所有规则
+code-review rules list
+
+# 查看规则详情
+code-review rules show sql-injection-string-concat
+
+# 禁用规则
+code-review rules disable sql-injection-string-concat
+
+# 启用规则
+code-review rules enable sql-injection-string-concat
+
+# 覆盖规则参数（如调整严重级别）
+code-review rules override sql-injection-string-concat --severity medium --name "SQL注入检查"
+```
+
+---
+
+## CLI 命令详解
+
+### 命令列表
+
+| 命令 | 描述 | 主要选项 |
+|---|---|---|
+| `parse` | 解析 diff 为结构化 JSON | - |
+| `review` | 生成审查 prompt 或执行审查 | `--execute`, `--llm-config`, `--incremental`, `--tui`, `--stream`, `--format`, `--output`, `--profile` |
+| `security-review` | 安全专项审查 | 同 review |
+| `scan` | 全量扫描目录 | `--language`, `--limit`, `--exclude` |
+| `impact` | 影响半径分析 | `--execute`, `--llm-config` |
+| `reflect` | 置信度评估 | `--execute`, `--llm-config` |
+| `publish` | 发布 PR 评论 | `--owner`, `--repo`, `--pr`, `--file`, `--token`, `--mode` |
+| `serve` | 启动 REST API 服务器 | `--port`, `--host` |
+| `audit` | 查询审计日志 | `--action`, `--since`, `--limit` |
+| `compliance` | 合规检查 | `--standard`, `--format` |
+| `alert` | 发送告警通知 | `--severity`, `--message`, `--slack-url`, `--email-to` |
+| `rules` | 规则管理 | `list`, `show`, `enable`, `disable`, `override` |
+| `metrics` | 输出审查度量 | `--sessions`, `--findings`, `--feedback` |
+| `dashboard` | 输出仪表盘数据 | - |
+| `feedback` | 交互式反馈 | `false-positive`, `accept`, `--reason` |
+
+### 通用选项
+
+| 选项 | 描述 |
+|---|---|
+| `--config <path>` | 指定配置文件路径 |
+| `--dry-run` | 模拟运行，不实际调用 LLM |
+| `--no-cache` | 禁用缓存 |
+| `--timeout <seconds>` | 设置超时时间 |
+| `--verbose` | 详细日志输出 |
+| `--no-color` | 禁用彩色输出 |
+
+### 使用示例
+
+```bash
+# 增量审查（只分析变更文件）
+git diff main...HEAD | code-review review --incremental
+
+# 启用流式输出
+git diff main...HEAD | code-review review --stream
+
+# 交互式 TUI 浏览 findings
+git diff main...HEAD | code-review review --tui
+
+# 输出为 SARIF 格式到文件
+git diff main...HEAD | code-review review --format sarif --output results.sarif
+
+# 性能剖析模式
+git diff main...HEAD | code-review review --profile
+
+# 全量扫描（仅 TypeScript，最多 10 个文件）
+code-review scan ./src --language typescript --limit 10
+
+# 启动 API 服务器
+code-review serve --port 3000 --host 0.0.0.0
+
+# 发送 Slack 告警
+code-review alert --severity critical --message "检测到严重安全问题" --slack-url https://hooks.slack.com/services/xxx
+
+# 标记误报
+code-review feedback finding-123 false-positive --reason "已确认不是问题"
+```
+
+---
+
+## 高级功能
+
+### 增量审查
+
+增量审查只分析上次审查后变更的文件，显著提升审查效率：
+
+```bash
+# 首次审查（全量）
+git diff main...HEAD | code-review review --execute --llm-config '{"provider":"openai","model":"gpt-4"}'
+
+# 后续审查（增量）
+git diff main...HEAD | code-review review --incremental --execute --llm-config '{"provider":"openai","model":"gpt-4"}'
+```
+
+增量状态默认保存在 `.code-review-incremental.json`，可通过 `--state-file` 指定路径。
+
+### 忽略文件
+
+在仓库根目录创建 `.reviewignore` 文件，语法同 `.gitignore`：
+
+```gitignore
+# 依赖目录
+node_modules/
+vendor/
+
+# 生成文件
+*.generated.*
+dist/
+build/
+
+# 锁文件
+package-lock.json
+```
+
+### 规则定制
+
+通过 `.code-review-rules.json` 配置规则的禁用和覆盖：
+
+```json
+{
+  "disabled": ["sql-injection-string-concat"],
+  "overrides": {
+    "hardcoded-secret": {
+      "severity": "critical",
+      "name": "硬编码密钥检测"
+    }
+  }
+}
+```
+
+### Webhook 通知
+
+配置 Webhook 在审查完成后发送通知：
+
+```bash
+# 在环境变量中配置 Webhook URL
+export CODE_REVIEW_WEBHOOK_URL=https://your-webhook-endpoint.com
+
+# 审查完成后自动推送
+git diff main...HEAD | code-review review --execute
+```
+
+### API 服务
+
+启动 REST API 服务器：
+
+```bash
+code-review serve --port 3000 --host 0.0.0.0
+```
+
+可用端点：
+- `POST /api/v1/review` - 触发审查
+- `GET /api/v1/findings` - 获取 findings
+- `GET /api/v1/health` - 健康检查
+- `GET /api/v1/metrics` - 获取度量数据
+
+### 告警集成
+
+支持多渠道告警：
+
+```bash
+# Slack
+code-review alert --severity high --message "高风险代码变更" --slack-url https://hooks.slack.com/services/xxx
+
+# Email（SendGrid）
+code-review alert --severity critical --message "严重安全问题" \
+  --email-to team@example.com \
+  --email-from alerts@example.com \
+  --email-api-key YOUR_SENDGRID_KEY
+
+# PagerDuty
+code-review alert --severity critical --message "紧急告警" --pagerduty-key YOUR_PAGERDUTY_KEY
+```
+
 ---
 
 ## CI/CD 集成
@@ -415,7 +637,7 @@ jobs:
 
 ### 忽略文件
 
-在仓库根目录创建 `.opencode-review-ignore`，语法同 `.gitignore`：
+在仓库根目录创建 `.reviewignore`，语法同 `.gitignore`：
 
 ```gitignore
 # 依赖目录
@@ -434,7 +656,7 @@ yarn.lock
 pnpm-lock.yaml
 ```
 
-参考 `.opencode-review-ignore.example`。
+参考 `.code-review-ignore.example`。
 
 ### 本地预审
 
@@ -478,8 +700,8 @@ npm run ci
 
 ### 当前状态
 
-- **测试用例**：1092 个，全部通过
-- **行覆盖率**：96.38%
+- **测试用例**：2583 个，全部通过（7 个跳过）
+- **行覆盖率**：90%+（阈值 90%，分支/函数/行/语句全覆盖）
 - **覆盖维度**：branches / functions / lines / statements 均 ≥ 90%
 - **基准测试**：`tests/benchmark/{accuracy,performance}.test.ts`
 
