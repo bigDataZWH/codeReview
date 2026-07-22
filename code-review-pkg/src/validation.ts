@@ -1,22 +1,32 @@
-// src/validation.ts — 验证函数
-
 import type { Finding, Severity, PipelineConfig } from './types.js';
 
 const VALID_SEVERITIES: Severity[] = ['critical', 'high', 'medium', 'low'];
 const VALID_SOURCES = ['rule', 'ai'];
 
-/**
- * 验证 Finding 对象的完整性。
- * 返回错误消息数组，空数组表示验证通过。
- */
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return isFiniteNumber(value) && Number.isInteger(value) && value > 0;
+}
+
+function isInRange(value: number, min: number, max: number): boolean {
+  return value >= min && value <= max;
+}
+
 export function validateFinding(f: Partial<Finding>): string[] {
   const errors: string[] = [];
 
-  if (!f.file || typeof f.file !== 'string') {
+  if (!isNonEmptyString(f.file)) {
     errors.push('file is required and must be a string');
   }
 
-  if (f.line == null || typeof f.line !== 'number' || f.line < 1) {
+  if (!isPositiveInteger(f.line)) {
     errors.push('line is required and must be a positive number');
   }
 
@@ -24,15 +34,15 @@ export function validateFinding(f: Partial<Finding>): string[] {
     errors.push(`severity must be one of: critical, high, medium, low, info (got "${String(f.severity)}")`);
   }
 
-  if (!f.category || typeof f.category !== 'string') {
+  if (!isNonEmptyString(f.category)) {
     errors.push('category is required and must be a string');
   }
 
-  if (!f.message || typeof f.message !== 'string') {
+  if (!isNonEmptyString(f.message)) {
     errors.push('message is required and must be a string');
   }
 
-  if (f.confidence == null || typeof f.confidence !== 'number' || f.confidence < 0 || f.confidence > 1) {
+  if (!isFiniteNumber(f.confidence) || !isInRange(f.confidence, 0, 1)) {
     errors.push('confidence is required and must be a number between 0 and 1');
   }
 
@@ -43,12 +53,6 @@ export function validateFinding(f: Partial<Finding>): string[] {
   return errors;
 }
 
-/**
- * 验证 PipelineConfig 的完整性。
- * 返回 { errors, warnings }：
- *   - errors：阻塞性问题，空数组表示校验通过
- *   - warnings：非阻塞警告（如 mcpEnabled=true 但未配置 mcpEndpoint）
- */
 export function validatePipelineConfigWithWarnings(config: Partial<PipelineConfig>): { errors: string[]; warnings: string[] } {
   const errors: string[] = [];
   const warnings: string[] = [];
@@ -56,18 +60,18 @@ export function validatePipelineConfigWithWarnings(config: Partial<PipelineConfi
   if (!config.filter) {
     errors.push('filter is required');
   } else {
-    if (config.filter.ignorePatterns && !Array.isArray(config.filter.ignorePatterns)) {
+    if (config.filter.ignorePatterns != null && !Array.isArray(config.filter.ignorePatterns)) {
       errors.push('filter.ignorePatterns must be an array');
     }
-    if (config.filter.includePatterns && !Array.isArray(config.filter.includePatterns)) {
+    if (config.filter.includePatterns != null && !Array.isArray(config.filter.includePatterns)) {
       errors.push('filter.includePatterns must be an array');
     }
-    if (config.filter.maxPatchLength != null && (typeof config.filter.maxPatchLength !== 'number' || config.filter.maxPatchLength < 0)) {
+    if (config.filter.maxPatchLength != null && (!isFiniteNumber(config.filter.maxPatchLength) || config.filter.maxPatchLength < 0)) {
       errors.push('filter.maxPatchLength must be a non-negative number');
     }
   }
 
-  if (config.rules && !Array.isArray(config.rules)) {
+  if (config.rules != null && !Array.isArray(config.rules)) {
     errors.push('rules must be an array');
   }
 
@@ -78,11 +82,6 @@ export function validatePipelineConfigWithWarnings(config: Partial<PipelineConfi
   return { errors, warnings };
 }
 
-/**
- * 验证 PipelineConfig 的完整性。
- * 返回错误消息数组，空数组表示验证通过。
- * 保持向后兼容：仅返回 errors，如需 warnings 请使用 validatePipelineConfigWithWarnings。
- */
 export function validatePipelineConfig(config: Partial<PipelineConfig>): string[] {
   return validatePipelineConfigWithWarnings(config).errors;
 }

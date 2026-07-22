@@ -1018,3 +1018,294 @@ describe('computeTextOverlap with LCS algorithm', () => {
     expect(computeTextOverlap('alpha beta', 'gamma delta')).toBe(0);
   });
 });
+
+// ==================== 边界情况测试 ====================
+describe('边界情况测试', () => {
+  describe('correctLineLocations 边界情况', () => {
+    it('空 diffs 数组 — finding 保持不变', () => {
+      const findings = [makeFinding({ file: 'a.ts', line: 10 })];
+      const result = correctLineLocations(findings, []);
+      expect(result).toHaveLength(1);
+      expect(result[0].line).toBe(10);
+    });
+
+    it('hunks 为空的 diff — finding 保持不变', () => {
+      const findings = [makeFinding({ file: 'a.ts', line: 10 })];
+      const diffs: FileDiff[] = [{ path: 'a.ts', status: 'modified', hunks: [] }];
+      const result = correctLineLocations(findings, diffs);
+      expect(result).toHaveLength(1);
+      expect(result[0].line).toBe(10);
+    });
+
+    it('多个 hunks — 找到正确的 hunk', () => {
+      const findings = [makeFinding({ file: 'a.ts', line: 20 })];
+      const diffs: FileDiff[] = [
+        {
+          path: 'a.ts',
+          status: 'modified',
+          hunks: [
+            { newStart: 1, newCount: 10, oldStart: 1, oldCount: 10, header: '', lines: [] },
+            { newStart: 15, newCount: 10, oldStart: 15, oldCount: 10, header: '', lines: [] },
+          ],
+        },
+      ];
+      const result = correctLineLocations(findings, diffs);
+      expect(result[0].line).toBe(20);
+    });
+
+    it('行号正好在 hunk 起始位置', () => {
+      const findings = [makeFinding({ file: 'a.ts', line: 5 })];
+      const diffs: FileDiff[] = [
+        {
+          path: 'a.ts',
+          status: 'modified',
+          hunks: [{ newStart: 5, newCount: 3, oldStart: 5, oldCount: 3, header: '', lines: [] }],
+        },
+      ];
+      const result = correctLineLocations(findings, diffs);
+      expect(result[0].line).toBe(5);
+    });
+
+    it('行号正好在 hunk 结束位置', () => {
+      const findings = [makeFinding({ file: 'a.ts', line: 7 })];
+      const diffs: FileDiff[] = [
+        {
+          path: 'a.ts',
+          status: 'modified',
+          hunks: [{ newStart: 5, newCount: 3, oldStart: 5, oldCount: 3, header: '', lines: [] }],
+        },
+      ];
+      const result = correctLineLocations(findings, diffs);
+      expect(result[0].line).toBe(7);
+    });
+
+    it('endLine 小于 hunk 起始 — clamp 到 hunk 起始', () => {
+      const findings = [makeFinding({ file: 'a.ts', line: 0, endLine: 2, message: 'test' })];
+      const diffs: FileDiff[] = [
+        {
+          path: 'a.ts',
+          status: 'modified',
+          hunks: [{ newStart: 5, newCount: 5, oldStart: 5, oldCount: 5, header: '', lines: [] }],
+        },
+      ];
+      const result = correctLineLocations(findings, diffs);
+      expect(result[0].line).toBe(5);
+      expect(result[0].endLine).toBe(5);
+    });
+  });
+
+  describe('filterFalsePositives 边界情况', () => {
+    it('空 findings 返回空数组', () => {
+      expect(filterFalsePositives([])).toEqual([]);
+    });
+
+    it('自定义规则为空时仅应用内置规则', () => {
+      const findings = [makeFinding({ file: 'a.py', line: 1, category: 'memory-safety', confidence: 0.5 })];
+      const result = filterFalsePositives(findings, []);
+      expect(result).toHaveLength(0);
+    });
+
+    it('置信度正好等于阈值 — 不过滤', () => {
+      const findings = [
+        makeFinding({
+          file: 'a.py',
+          line: 1,
+          category: 'memory-safety',
+          confidence: 0.85,
+        }),
+      ];
+      const result = filterFalsePositives(findings);
+      expect(result).toHaveLength(1);
+    });
+  });
+
+  describe('deduplicateFindings 边界情况', () => {
+    it('空 newFindings 返回空数组', () => {
+      const result = deduplicateFindings([], [{ file: 'a.ts', line: 1, body: 'test' }]);
+      expect(result).toEqual([]);
+    });
+
+    it('不同文件的相同消息不去重', () => {
+      const newFindings = [makeFinding({ file: 'a.ts', line: 10, message: 'SQL injection' })];
+      const existingComments = [{ file: 'b.ts', line: 10, body: 'SQL injection' }];
+      const result = deduplicateFindings(newFindings, existingComments);
+      expect(result).toHaveLength(1);
+    });
+
+    it('同文件不同行不去重', () => {
+      const newFindings = [makeFinding({ file: 'a.ts', line: 10, message: 'SQL injection' })];
+      const existingComments = [{ file: 'a.ts', line: 20, body: 'SQL injection' }];
+      const result = deduplicateFindings(newFindings, existingComments);
+      expect(result).toHaveLength(1);
+    });
+
+    it('阈值接近 0 时几乎全部去重', () => {
+      const newFindings = [makeFinding({ file: 'a.ts', line: 10, message: 'hello world test' })];
+      const existingComments = [{ file: 'a.ts', line: 10, body: 'hello world different' }];
+      const result = deduplicateFindings(newFindings, existingComments, 0.01);
+      expect(result).toHaveLength(0);
+    });
+
+    it('阈值为 1 时只有完全相同才去重', () => {
+      const newFindings = [
+        makeFinding({ file: 'a.ts', line: 10, message: 'hello world foo bar' }),
+      ];
+      const existingComments = [{ file: 'a.ts', line: 10, body: 'hello world' }];
+      const result = deduplicateFindings(newFindings, existingComments, 0.99);
+      expect(result).toHaveLength(1);
+    });
+  });
+
+  describe('filterBySeverity 边界情况', () => {
+    it('未知 minSeverity 默认返回全部', () => {
+      const findings = [
+        makeFinding({ file: 'a.ts', line: 1, severity: 'info' }),
+        makeFinding({ file: 'b.ts', line: 2, severity: 'low' }),
+      ];
+      const result = filterBySeverity(findings, 'unknown');
+      expect(result).toHaveLength(2);
+    });
+
+    it('未知 severity 的 finding 级别为 0', () => {
+      const findings = [
+        {
+          file: 'a.ts',
+          line: 1,
+          severity: 'unknown' as const,
+          category: 'test',
+          message: 'test',
+          confidence: 1,
+          source: 'rule' as const,
+        },
+      ];
+      const resultLow = filterBySeverity(findings, 'low');
+      expect(resultLow).toHaveLength(0);
+      const resultInfo = filterBySeverity(findings, 'info');
+      expect(resultInfo).toHaveLength(1);
+    });
+  });
+
+  describe('groupByFile 边界情况', () => {
+    it('相同文件的 findings 被分到同一组', () => {
+      const findings = [
+        makeFinding({ file: 'a.ts', line: 1 }),
+        makeFinding({ file: 'a.ts', line: 2 }),
+        makeFinding({ file: 'a.ts', line: 3 }),
+      ];
+      const grouped = groupByFile(findings);
+      expect(grouped.size).toBe(1);
+      expect(grouped.get('a.ts')).toHaveLength(3);
+    });
+  });
+
+  describe('sortBySeverity 边界情况', () => {
+    it('相同严重级别保持相对顺序（稳定排序）', () => {
+      const findings = [
+        makeFinding({ file: 'a.ts', line: 1, severity: 'high', message: 'first' }),
+        makeFinding({ file: 'b.ts', line: 2, severity: 'high', message: 'second' }),
+        makeFinding({ file: 'c.ts', line: 3, severity: 'high', message: 'third' }),
+      ];
+      const sorted = sortBySeverity(findings);
+      expect(sorted.map((f) => f.message)).toEqual(['first', 'second', 'third']);
+    });
+
+    it('不修改原数组', () => {
+      const findings = [
+        makeFinding({ file: 'a.ts', line: 1, severity: 'low' }),
+        makeFinding({ file: 'b.ts', line: 2, severity: 'critical' }),
+      ];
+      const original = [...findings];
+      sortBySeverity(findings);
+      expect(findings).toEqual(original);
+    });
+  });
+
+  describe('mergeFindings 边界情况', () => {
+    it('两个空数组返回空数组', () => {
+      expect(mergeFindings([], [])).toEqual([]);
+    });
+
+    it('保留 existing 的顺序，追加 incoming 新元素', () => {
+      const existing = [
+        makeFinding({ file: 'a.ts', line: 1, category: 'security', message: 'existing' }),
+      ];
+      const incoming = [
+        makeFinding({ file: 'b.ts', line: 2, category: 'style', message: 'new1' }),
+        makeFinding({ file: 'c.ts', line: 3, category: 'performance', message: 'new2' }),
+      ];
+      const merged = mergeFindings(existing, incoming);
+      expect(merged).toHaveLength(3);
+      expect(merged[0].message).toBe('existing');
+      expect(merged[1].message).toBe('new1');
+      expect(merged[2].message).toBe('new2');
+    });
+  });
+
+  describe('truncateFindings 边界情况', () => {
+    it('空 findings 返回空数组', () => {
+      expect(truncateFindings([], 5)).toEqual([]);
+    });
+
+    it('maxCount 为负数时只保留截断提示', () => {
+      const findings = [makeFinding({ file: 'a.ts', line: 1 })];
+      const result = truncateFindings(findings, -1);
+      expect(result).toHaveLength(1);
+      expect(result[0].category).toBe('_truncation');
+    });
+
+    it('截断消息中包含正确的数量', () => {
+      const findings = Array.from({ length: 100 }, (_, i) =>
+        makeFinding({ file: `f${i}.ts`, line: i + 1 }),
+      );
+      const result = truncateFindings(findings, 10);
+      expect(result).toHaveLength(11);
+      expect(result[10].message).toContain('90 more findings truncated');
+    });
+  });
+
+  describe('getUniqueCategories 边界情况', () => {
+    it('相同频率按出现顺序排列', () => {
+      const findings = [
+        makeFinding({ file: 'a.ts', line: 1, category: 'security' }),
+        makeFinding({ file: 'b.ts', line: 2, category: 'style' }),
+        makeFinding({ file: 'c.ts', line: 3, category: 'performance' }),
+      ];
+      const cats = getUniqueCategories(findings);
+      expect(cats).toEqual(['security', 'style', 'performance']);
+    });
+  });
+
+  describe('createCachedFilter 边界情况', () => {
+    it('空缓存不匹配任何 finding', () => {
+      const rule = createCachedFilter(new Set());
+      const finding = makeFinding({ file: 'a.ts', line: 1, category: 'security' });
+      expect(rule.match(finding)).toBe(false);
+    });
+  });
+
+  describe('computeTextOverlap 边界情况', () => {
+    it('相同字符串直接返回 1（短路优化）', () => {
+      expect(computeTextOverlap('a b c', 'a b c')).toBe(1);
+      expect(computeTextOverlap('!!!@@@###', '!!!@@@###')).toBe(1);
+    });
+
+    it('不同单字符词字符串返回 0（被过滤掉）', () => {
+      expect(computeTextOverlap('a b c', 'd e f')).toBe(0);
+    });
+
+    it('不同纯符号字符串返回 0', () => {
+      expect(computeTextOverlap('!!!@@@###', '$$$%%%^^^')).toBe(0);
+    });
+
+    it('中文文本支持', () => {
+      const overlap = computeTextOverlap('这是一个测试', '这是一个测试');
+      expect(overlap).toBe(1);
+    });
+
+    it('中英文混合文本', () => {
+      const overlap = computeTextOverlap('SQL 注入 漏洞', 'SQL 注入 风险');
+      expect(overlap).toBeGreaterThan(0);
+      expect(overlap).toBeLessThan(1);
+    });
+  });
+});

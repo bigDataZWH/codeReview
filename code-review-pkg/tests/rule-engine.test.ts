@@ -1114,3 +1114,319 @@ describe('matchRules excludePatterns', () => {
     expect(result).toHaveLength(1);
   });
 });
+
+// ── 边界情况测试 ──
+
+describe('边界情况: 空输入', () => {
+  it('空 rules 数组返回空标注', () => {
+    const bundle = makeBundle(
+      makeFileDiff({
+        path: 'src/app.ts', language: 'typescript',
+        hunks: [makeHunk([{ type: 'add', content: '+eval(x)', newLineNumber: 1 }], 1, 1)],
+      }),
+    );
+    const result = matchRules(bundle, []);
+    expect(result).toHaveLength(0);
+    expect(Array.isArray(result)).toBe(true);
+  });
+
+  it('空 hunks 数组返回空标注', () => {
+    const bundle = makeBundle(
+      makeFileDiff({ path: 'src/app.ts', language: 'typescript', hunks: [] }),
+    );
+    const rules: Rule[] = [
+      { id: 'R1', name: 'test', severity: 'high', category: 'security',
+        patterns: [{ type: 'regex', pattern: 'eval\\(', message: 'eval found' }] },
+    ];
+    const result = matchRules(bundle, rules);
+    expect(result).toHaveLength(0);
+  });
+
+  it('只有 context 行时不匹配', () => {
+    const bundle = makeBundle(
+      makeFileDiff({
+        path: 'src/app.ts', language: 'typescript',
+        hunks: [
+          makeHunk([
+            { type: 'context', content: ' const x = 1;', oldLineNumber: 1, newLineNumber: 1 },
+            { type: 'context', content: ' const y = 2;', oldLineNumber: 2, newLineNumber: 2 },
+          ], 1, 1),
+        ],
+      }),
+    );
+    const rules: Rule[] = [
+      { id: 'R1', name: 'test', severity: 'high', category: 'security',
+        patterns: [{ type: 'regex', pattern: 'const', message: 'found const' }] },
+    ];
+    const result = matchRules(bundle, rules);
+    expect(result).toHaveLength(0);
+  });
+});
+
+describe('边界情况: pattern.line 行号过滤', () => {
+  it('regex: pattern.line 匹配指定行号', () => {
+    const bundle = makeBundle(
+      makeFileDiff({
+        path: 'src/app.ts', language: 'typescript',
+        hunks: [
+          makeHunk([
+            { type: 'add', content: '+const a = 1;', newLineNumber: 10 },
+            { type: 'add', content: '+eval(x)', newLineNumber: 11 },
+            { type: 'add', content: '+const b = 2;', newLineNumber: 12 },
+          ], 10, 10),
+        ],
+      }),
+    );
+    const rules: Rule[] = [
+      { id: 'R1', name: 'test', severity: 'high', category: 'security',
+        patterns: [{ type: 'regex', pattern: 'eval\\(', line: 11, message: 'eval found' }] },
+    ];
+    const result = matchRules(bundle, rules);
+    expect(result).toHaveLength(1);
+    expect(result[0].line).toBe(11);
+  });
+
+  it('regex: pattern.line 不匹配时返回空', () => {
+    const bundle = makeBundle(
+      makeFileDiff({
+        path: 'src/app.ts', language: 'typescript',
+        hunks: [
+          makeHunk([
+            { type: 'add', content: '+eval(x)', newLineNumber: 11 },
+          ], 10, 10),
+        ],
+      }),
+    );
+    const rules: Rule[] = [
+      { id: 'R1', name: 'test', severity: 'high', category: 'security',
+        patterns: [{ type: 'regex', pattern: 'eval\\(', line: 99, message: 'eval found' }] },
+    ];
+    const result = matchRules(bundle, rules);
+    expect(result).toHaveLength(0);
+  });
+
+  it('contains_any: pattern.line 匹配指定行号', () => {
+    const bundle = makeBundle(
+      makeFileDiff({
+        path: 'src/app.ts', language: 'typescript',
+        hunks: [
+          makeHunk([
+            { type: 'add', content: '+const a = 1;', newLineNumber: 10 },
+            { type: 'add', content: '+eval(x)', newLineNumber: 11 },
+          ], 10, 10),
+        ],
+      }),
+    );
+    const rules: Rule[] = [
+      { id: 'R1', name: 'test', severity: 'high', category: 'security',
+        patterns: [{ type: 'contains_any', items: ['eval('], line: 11, message: 'found' }] },
+    ];
+    const result = matchRules(bundle, rules);
+    expect(result).toHaveLength(1);
+    expect(result[0].line).toBe(11);
+  });
+});
+
+describe('边界情况: delete 行匹配', () => {
+  it('regex 匹配 delete 行', () => {
+    const bundle = makeBundle(
+      makeFileDiff({
+        path: 'src/app.ts', language: 'typescript',
+        hunks: [
+          makeHunk([
+            { type: 'delete', content: '-eval(x)', oldLineNumber: 5 },
+          ], 5, 5),
+        ],
+      }),
+    );
+    const rules: Rule[] = [
+      { id: 'R1', name: 'test', severity: 'high', category: 'security',
+        patterns: [{ type: 'regex', pattern: 'eval\\(', message: 'eval found' }] },
+    ];
+    const result = matchRules(bundle, rules);
+    expect(result).toHaveLength(1);
+    expect(result[0].line).toBe(5);
+  });
+
+  it('contains_any 匹配 delete 行', () => {
+    const bundle = makeBundle(
+      makeFileDiff({
+        path: 'src/app.ts', language: 'typescript',
+        hunks: [
+          makeHunk([
+            { type: 'delete', content: '-password = "secret"', oldLineNumber: 3 },
+          ], 3, 3),
+        ],
+      }),
+    );
+    const rules: Rule[] = [
+      { id: 'R1', name: 'test', severity: 'high', category: 'security',
+        patterns: [{ type: 'contains_any', items: ['password'], message: 'found' }] },
+    ];
+    const result = matchRules(bundle, rules);
+    expect(result).toHaveLength(1);
+  });
+});
+
+describe('边界情况: contains_all 空变更行', () => {
+  it('contains_all: 无变更行时返回 null', () => {
+    const bundle = makeBundle(
+      makeFileDiff({
+        path: 'src/app.ts', language: 'typescript',
+        hunks: [
+          makeHunk([
+            { type: 'context', content: ' const x = 1;', oldLineNumber: 1, newLineNumber: 1 },
+          ], 1, 1),
+        ],
+      }),
+    );
+    const rules: Rule[] = [
+      { id: 'R1', name: 'test', severity: 'low', category: 'style',
+        patterns: [{ type: 'contains_all', items: ['TODO', 'FIXME'], message: 'both found' }] },
+    ];
+    const result = matchRules(bundle, rules);
+    expect(result).toHaveLength(0);
+  });
+});
+
+describe('边界情况: YAML 规则增强', () => {
+  it('YAML: language 为 string 时自动转为数组', async () => {
+    const { mkdir, writeFile, rm } = await import('node:fs/promises');
+    const tmpDir = join(fixturesDir, '_tmp_yaml_lang_string');
+    await mkdir(tmpDir, { recursive: true });
+    await writeFile(
+      join(tmpDir, 'rules.yaml'),
+      `- id: YAML-LANG-STR
+  name: YAML Lang String
+  severity: high
+  category: security
+  language: typescript
+  patterns:
+    - type: regex
+      pattern: eval\\(
+      message: eval found
+`,
+    );
+
+    try {
+      const rules = await loadRules(tmpDir);
+      const rule = rules.find((r) => r.id === 'YAML-LANG-STR');
+      expect(rule).toBeDefined();
+      expect(Array.isArray(rule!.language)).toBe(true);
+      expect(rule!.language).toEqual(['typescript']);
+    } finally {
+      await rm(tmpDir, { recursive: true });
+    }
+  });
+
+  it('YAML: items 为 string 时自动转为数组', async () => {
+    const { mkdir, writeFile, rm } = await import('node:fs/promises');
+    const tmpDir = join(fixturesDir, '_tmp_yaml_items_str');
+    await mkdir(tmpDir, { recursive: true });
+    await writeFile(
+      join(tmpDir, 'rules.yaml'),
+      `- id: YAML-ITEMS-STR
+  name: YAML Items String
+  severity: medium
+  category: style
+  patterns:
+    - type: contains_any
+      items: TODO
+      message: todo found
+`,
+    );
+
+    try {
+      const rules = await loadRules(tmpDir);
+      const rule = rules.find((r) => r.id === 'YAML-ITEMS-STR');
+      expect(rule).toBeDefined();
+      expect(rule!.patterns[0].items).toEqual(['TODO']);
+    } finally {
+      await rm(tmpDir, { recursive: true });
+    }
+  });
+
+  it('YAML: 非法正则抛出错误', async () => {
+    const { mkdir, writeFile, rm } = await import('node:fs/promises');
+    const tmpDir = join(fixturesDir, '_tmp_yaml_bad_regex');
+    await mkdir(tmpDir, { recursive: true });
+    await writeFile(
+      join(tmpDir, 'bad-rule.yaml'),
+      `- id: BAD-YAML-001
+  name: Bad YAML Regex
+  severity: high
+  category: security
+  patterns:
+    - type: regex
+      pattern: '[invalid('
+      message: bad pattern
+`,
+    );
+
+    try {
+      await expect(loadRules(tmpDir)).rejects.toThrow('invalid regex');
+    } finally {
+      await rm(tmpDir, { recursive: true });
+    }
+  });
+
+  it('YAML: 支持 group、description、disabled、excludePatterns 字段', async () => {
+    const { mkdir, writeFile, rm } = await import('node:fs/promises');
+    const tmpDir = join(fixturesDir, '_tmp_yaml_all_fields');
+    await mkdir(tmpDir, { recursive: true });
+    await writeFile(
+      join(tmpDir, 'rules.yaml'),
+      `- id: YAML-ALL-FIELDS
+  name: YAML All Fields
+  severity: low
+  category: style
+  group: test-group
+  description: test description
+  disabled: false
+  excludePatterns:
+    - ^vendor/
+  patterns:
+    - type: regex
+      pattern: TODO
+      message: found todo
+`,
+    );
+
+    try {
+      const rules = await loadRules(tmpDir);
+      const rule = rules.find((r) => r.id === 'YAML-ALL-FIELDS');
+      expect(rule).toBeDefined();
+      expect(rule!.group).toBe('test-group');
+      expect(rule!.description).toBe('test description');
+      expect(rule!.disabled).toBe(false);
+      expect(rule!.excludePatterns).toEqual(['^vendor/']);
+    } finally {
+      await rm(tmpDir, { recursive: true });
+    }
+  });
+});
+
+describe('边界情况: getRulesByCategory / getRulesBySeverity 空数组', () => {
+  it('getRulesByCategory: 空数组返回空数组', () => {
+    expect(getRulesByCategory([], 'security')).toHaveLength(0);
+  });
+
+  it('getRulesBySeverity: 空数组返回空数组', () => {
+    expect(getRulesBySeverity([], 'high')).toHaveLength(0);
+  });
+});
+
+describe('边界情况: loadRules 空目录', () => {
+  it('空目录返回空规则数组', async () => {
+    const { mkdir, rm } = await import('node:fs/promises');
+    const tmpDir = join(fixturesDir, '_tmp_empty_dir');
+    await mkdir(tmpDir, { recursive: true });
+
+    try {
+      const rules = await loadRules(tmpDir);
+      expect(rules).toHaveLength(0);
+    } finally {
+      await rm(tmpDir, { recursive: true });
+    }
+  });
+});

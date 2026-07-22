@@ -1,4 +1,6 @@
-import type { FileDiff, FileBundle, FilterConfig, BundleConfig } from './types.js';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import type { FileDiff, FileBundle, FilterConfig, BundleConfig, BundleRule } from './types.js';
 import { globToRegex } from './glob.js';
 
 // ── 扩展名 -> 语言映射 ──
@@ -78,42 +80,61 @@ const EXTENSION_LANGUAGE_MAP: Record<string, string> = {
   '.makefile': 'makefile',
 };
 
+const SPECIAL_FILE_LANGUAGE_MAP: Array<{ test: (name: string) => boolean; lang: string }> = [
+  { test: (n) => n === 'dockerfile' || n.startsWith('dockerfile.'), lang: 'dockerfile' },
+  { test: (n) => n === 'makefile' || n === 'gnumakefile', lang: 'makefile' },
+  { test: (n) => n === 'jenkinsfile', lang: 'groovy' },
+  { test: (n) => n === 'cmakelists.txt', lang: 'cmake' },
+];
+
 /**
  * 根据文件路径检测编程语言。
  * @param path - 文件路径
  * @returns 语言名称字符串，无法识别时返回 undefined
  */
 export function detectLanguage(path: string): string | undefined {
-  // 特殊文件名检测（如 Dockerfile, Makefile）
+  if (!path) return undefined;
+
   const fileName = path.split('/').pop() ?? '';
   const lowerFileName = fileName.toLowerCase();
-  if (lowerFileName === 'dockerfile' || lowerFileName.startsWith('dockerfile.')) {
-    return 'dockerfile';
-  }
-  if (lowerFileName === 'makefile' || lowerFileName === 'gnumakefile') {
-    return 'makefile';
-  }
-  if (lowerFileName === 'jenkinsfile') {
-    return 'groovy';
-  }
-  if (lowerFileName === 'cmakelists.txt') {
-    return 'cmake';
+
+  for (const { test, lang } of SPECIAL_FILE_LANGUAGE_MAP) {
+    if (test(lowerFileName)) return lang;
   }
 
-  // 扩展名检测
   const lastDot = fileName.lastIndexOf('.');
   if (lastDot === -1) return undefined;
   const ext = fileName.substring(lastDot).toLowerCase();
   return EXTENSION_LANGUAGE_MAP[ext];
 }
 
-// ── 手写 glob 匹配器 ──
-// 实现：见 src/glob.ts（与 feedback.ts 共用）
+// ── 内部辅助函数 ──
 
 /** 判断文件路径是否匹配 glob 模式 */
 function matchesGlob(path: string, pattern: string): boolean {
-  const regex = globToRegex(pattern);
-  return regex.test(path);
+  return globToRegex(pattern).test(path);
+}
+
+/** 计算 FileDiff 的 patch 总长度（所有 hunk lines 拼接） */
+function getPatchLength(diff: FileDiff): number {
+  return diff.hunks.reduce(
+    (sum, h) => sum + h.lines.reduce((s, l) => s + l.content.length, 0),
+    0,
+  );
+}
+
+/** 从文件系统读取忽略模式文件并解析 */
+async function loadIgnoreFile(rootDir: string, fileName: string, label: string): Promise<string[]> {
+  try {
+    const content = await readFile(join(rootDir, fileName), 'utf-8');
+    return content
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0 && !l.startsWith('#'));
+  } catch (err) {
+    console.warn(`[file-filter] ${label} failed to read ${fileName}:`, err);
+    return [];
+  }
 }
 
 // ── 默认忽略模式 ──
@@ -129,24 +150,20 @@ const DEFAULT_IGNORE_PATTERNS = [
 export function filterFiles(diffs: FileDiff[], config: FilterConfig): FileDiff[] {
   if (diffs.length === 0) return [];
 
-  // 合并默认忽略模式和用户配置的忽略模式
   const allIgnorePatterns = [
     ...DEFAULT_IGNORE_PATTERNS,
     ...(config.ignorePatterns ?? []),
   ];
 
   const filtered = diffs.filter((diff) => {
-    // 二进制文件默认排除
     if (diff.binary && !config.includeBinary) {
       return false;
     }
 
-    // includeDeleted 过滤（默认 true，false 时排除 deleted 文件）
     if (config.includeDeleted === false && diff.status === 'deleted') {
       return false;
     }
 
-    // language 过滤
     if (config.language && config.language.length > 0) {
       const fileLang = detectLanguage(diff.path);
       if (!fileLang || !config.language.includes(fileLang)) {
@@ -154,30 +171,21 @@ export function filterFiles(diffs: FileDiff[], config: FilterConfig): FileDiff[]
       }
     }
 
-    // maxPatchLength 检查：计算所有 hunk lines 的总字符数
     if (config.maxPatchLength !== undefined) {
-      const patchLen = diff.hunks.reduce(
-        (sum, h) => sum + h.lines.reduce((s, l) => s + l.content.length, 0),
-        0,
-      );
-      if (patchLen > config.maxPatchLength) {
+      if (getPatchLength(diff) > config.maxPatchLength) {
         return false;
       }
     }
 
-    // include 模式过滤（支持 ! 否定模式）
     if (config.includePatterns && config.includePatterns.length > 0) {
-      // 将 includePatterns 分为肯定和否定两组
       let included = false;
       for (const pat of config.includePatterns) {
         if (pat.startsWith('!')) {
-          // 否定模式：如果匹配则排除
           const negPat = pat.substring(1);
           if (matchesGlob(diff.path, negPat)) {
             included = false;
           }
         } else {
-          // 肯定模式：如果匹配则包含
           if (matchesGlob(diff.path, pat)) {
             included = true;
           }
@@ -186,7 +194,6 @@ export function filterFiles(diffs: FileDiff[], config: FilterConfig): FileDiff[]
       if (!included) return false;
     }
 
-    // ignore 模式过滤（优先级高于 include）
     if (allIgnorePatterns.length > 0) {
       const ignored = allIgnorePatterns.some((pat) => matchesGlob(diff.path, pat));
       if (ignored) return false;
@@ -195,7 +202,6 @@ export function filterFiles(diffs: FileDiff[], config: FilterConfig): FileDiff[]
     return true;
   });
 
-  // maxFiles 截断
   if (config.maxFiles !== undefined && filtered.length > config.maxFiles) {
     return filtered.slice(0, config.maxFiles);
   }
@@ -205,38 +211,49 @@ export function filterFiles(diffs: FileDiff[], config: FilterConfig): FileDiff[]
 
 // ── bundleFiles ──
 
+interface CompiledBundleRule extends BundleRule {
+  primaryRegex: RegExp;
+}
+
+function compileBundleRules(rules: BundleRule[]): CompiledBundleRule[] {
+  return rules.map((rule) => ({
+    ...rule,
+    primaryRegex: new RegExp('^' + rule.pattern + '$'),
+  }));
+}
+
+function resolveRelatedPattern(pattern: string, match: RegExpExecArray): string {
+  let resolved = pattern;
+  for (let g = 1; g < match.length; g++) {
+    resolved = resolved.replace(new RegExp('\\$' + g, 'g'), match[g] ?? '');
+  }
+  return resolved;
+}
+
 export function bundleFiles(diffs: FileDiff[], config?: BundleConfig): FileBundle[] {
   if (diffs.length === 0) return [];
 
   const bundles: FileBundle[] = [];
-  const bundled = new Set<number>(); // 已被打包的文件索引
-
-  const rules = config?.bundles ?? [];
+  const bundled = new Set<number>();
+  const compiledRules = compileBundleRules(config?.bundles ?? []);
 
   for (let i = 0; i < diffs.length; i++) {
     if (bundled.has(i)) continue;
 
     let matched = false;
 
-    for (const rule of rules) {
-      const primaryRegex = new RegExp('^' + rule.pattern + '$');
-      const match = primaryRegex.exec(diffs[i].path);
+    for (const rule of compiledRules) {
+      const match = rule.primaryRegex.exec(diffs[i].path);
 
       if (match) {
-        // 找到 related 文件
         const relatedFiles: FileDiff[] = [];
 
         for (const relatedPattern of rule.related) {
-          // 将 related pattern 中的 $1, $2 等替换为捕获组内容
-          let resolvedPattern = relatedPattern;
-          for (let g = 1; g < match.length; g++) {
-            resolvedPattern = resolvedPattern.replace(new RegExp('\\$' + g, 'g'), match[g] ?? '');
-          }
+          const resolvedPattern = resolveRelatedPattern(relatedPattern, match);
+          const relatedRegex = new RegExp('^' + resolvedPattern + '$');
 
-          // 在剩余文件中查找匹配 resolvedPattern 的文件
           for (let j = 0; j < diffs.length; j++) {
             if (j === i || bundled.has(j)) continue;
-            const relatedRegex = new RegExp('^' + resolvedPattern + '$');
             if (relatedRegex.test(diffs[j].path)) {
               relatedFiles.push(diffs[j]);
               bundled.add(j);
@@ -253,12 +270,11 @@ export function bundleFiles(diffs: FileDiff[], config?: BundleConfig): FileBundl
 
         bundled.add(i);
         matched = true;
-        break; // 一个文件只匹配第一个规则
+        break;
       }
     }
 
     if (!matched) {
-      // 无匹配规则，独立 bundle
       bundles.push({
         id: diffs[i].path,
         primary: diffs[i],
@@ -273,10 +289,6 @@ export function bundleFiles(diffs: FileDiff[], config?: BundleConfig): FileBundl
 
 // ── groupByDirectory ──
 
-/**
- * 按目录分组变更文件。
- * 返回 Map<目录路径, FileDiff[]>。
- */
 export function groupByDirectory(diffs: FileDiff[]): Map<string, FileDiff[]> {
   const groups = new Map<string, FileDiff[]>();
   for (const diff of diffs) {
@@ -314,11 +326,7 @@ export function excludeGeneratedFiles(diffs: FileDiff[]): FileDiff[] {
  * 按_patch 字符数降序排列（大 patch 排前面，优先审查大变更）。
  */
 export function sortByPatchSize(diffs: FileDiff[]): FileDiff[] {
-  return [...diffs].sort((a, b) => {
-    const sizeA = a.hunks.reduce((s, h) => s + h.lines.reduce((ls, l) => ls + l.content.length, 0), 0);
-    const sizeB = b.hunks.reduce((s, h) => s + h.lines.reduce((ls, l) => ls + l.content.length, 0), 0);
-    return sizeB - sizeA;
-  });
+  return [...diffs].sort((a, b) => getPatchLength(b) - getPatchLength(a));
 }
 
 /**
@@ -339,36 +347,14 @@ export function getLanguageStats(diffs: FileDiff[]): { language: string; count: 
  * 从文件系统读取 .gitignore 并返回忽略模式列表。
  * 如果文件不存在或不可读，返回空数组。
  */
-export async function loadGitignorePatterns(rootDir: string): Promise<string[]> {
-  try {
-    const { readFile } = await import('node:fs/promises');
-    const { join } = await import('node:path');
-    const content = await readFile(join(rootDir, '.gitignore'), 'utf-8');
-    return content
-      .split('\n')
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0 && !l.startsWith('#'));
-  } catch (err) {
-    console.warn('[file-filter] loadGitignorePatterns failed to read .gitignore:', err);
-    return [];
-  }
+export function loadGitignorePatterns(rootDir: string): Promise<string[]> {
+  return loadIgnoreFile(rootDir, '.gitignore', 'loadGitignorePatterns');
 }
 
 /**
  * 从文件系统读取 .opencode-review-ignore 并返回忽略模式列表。
  * 如果文件不存在或不可读，返回空数组。
  */
-export async function loadReviewIgnorePatterns(rootDir: string): Promise<string[]> {
-  try {
-    const { readFile } = await import('node:fs/promises');
-    const { join } = await import('node:path');
-    const content = await readFile(join(rootDir, '.opencode-review-ignore'), 'utf-8');
-    return content
-      .split('\n')
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0 && !l.startsWith('#'));
-  } catch (err) {
-    console.warn('[file-filter] loadReviewIgnorePatterns failed to read .opencode-review-ignore:', err);
-    return [];
-  }
+export function loadReviewIgnorePatterns(rootDir: string): Promise<string[]> {
+  return loadIgnoreFile(rootDir, '.opencode-review-ignore', 'loadReviewIgnorePatterns');
 }

@@ -227,6 +227,111 @@ describe('collectMetrics 度量指标收集', () => {
     });
     expect(metrics.trend.direction).toBe('stable');
   });
+
+  it('负 tokenConsumed 被钳制为 0', () => {
+    const metrics = collectMetrics({
+      sessions: [],
+      findings: [],
+      feedback: new FeedbackStore(),
+      tokenConsumed: -100,
+    });
+    expect(metrics.cost.tokenConsumed).toBe(0);
+  });
+
+  it('负 filesTotal/filesProcessed 被钳制为 0', () => {
+    const sessions = [
+      { id: 's1', status: 'completed' as const, filesTotal: -5, filesProcessed: -2, createdAt: 1, updatedAt: 1 },
+    ];
+    const metrics = collectMetrics({ sessions, findings: [], feedback: new FeedbackStore() });
+    expect(metrics.coverage.fileCoverage).toBe(0);
+    expect(metrics.quality.avgFindingsPerFile).toBe(0);
+  });
+
+  it('负 linesAnalyzed 被钳制为 0', () => {
+    const sessions = [
+      { id: 's1', status: 'completed' as const, filesTotal: 1, filesProcessed: 1, createdAt: 1, updatedAt: 1, linesAnalyzed: -500 },
+    ];
+    const metrics = collectMetrics({
+      sessions,
+      findings: [],
+      feedback: new FeedbackStore(),
+      tokenConsumed: 1000,
+    });
+    expect(metrics.cost.tokensPerKLine).toBe(0);
+  });
+
+  it('finishedAt < createdAt 时不计入总耗时', () => {
+    const now = Date.now();
+    const sessions = [
+      { id: 's1', status: 'completed' as const, filesTotal: 1, filesProcessed: 1, createdAt: now, updatedAt: now - 500, finishedAt: now - 500 },
+    ];
+    const metrics = collectMetrics({ sessions, findings: [], feedback: new FeedbackStore() });
+    expect(metrics.efficiency.totalDurationMs).toBe(0);
+    expect(metrics.efficiency.avgDurationPerSession).toBe(0);
+  });
+
+  it('无 findingsBySession 时 findings 总数准确', () => {
+    const now = Date.now();
+    const sessions = [
+      { id: 's1', status: 'completed' as const, filesTotal: 1, filesProcessed: 1, createdAt: now - 2 * 86400 * 1000, updatedAt: now - 2 * 86400 * 1000 },
+      { id: 's2', status: 'completed' as const, filesTotal: 1, filesProcessed: 1, createdAt: now - 86400 * 1000, updatedAt: now - 86400 * 1000 },
+      { id: 's3', status: 'completed' as const, filesTotal: 1, filesProcessed: 1, createdAt: now, updatedAt: now },
+    ];
+    const findings: Finding[] = Array.from({ length: 7 }, (_, i) => makeFinding({ file: `f${i}.ts` }));
+    const metrics = collectMetrics({ sessions, findings, feedback: new FeedbackStore() });
+    const totalFindings = metrics.trend.buckets.reduce((s, b) => s + b.findingCount, 0);
+    expect(totalFindings).toBe(7);
+  });
+
+  it('单个会话时趋势为 stable', () => {
+    const now = Date.now();
+    const sessions = [
+      { id: 's1', status: 'completed' as const, filesTotal: 1, filesProcessed: 1, createdAt: now, updatedAt: now },
+    ];
+    const metrics = collectMetrics({
+      sessions,
+      findings: [],
+      feedback: new FeedbackStore(),
+      findingsBySession: new Map([['s1', [makeFinding()]]]),
+    });
+    expect(metrics.trend.direction).toBe('stable');
+  });
+
+  it('未知严重度的 finding 计入 info', () => {
+    const findings: Finding[] = [
+      makeFinding({ severity: 'unknown-severity' as any }),
+      makeFinding({ severity: undefined as any }),
+    ];
+    const metrics = collectMetrics({ sessions: [], findings, feedback: new FeedbackStore() });
+    expect(metrics.quality.severityDistribution.info).toBe(2);
+  });
+
+  it('findingsBySession 中不存在的会话 ID 被忽略', () => {
+    const now = Date.now();
+    const sessions = [
+      { id: 's1', status: 'completed' as const, filesTotal: 1, filesProcessed: 1, createdAt: now, updatedAt: now },
+    ];
+    const metrics = collectMetrics({
+      sessions,
+      findings: [],
+      feedback: new FeedbackStore(),
+      findingsBySession: new Map([
+        ['s1', [makeFinding({ file: 'a.ts' })]],
+        ['nonexistent', [makeFinding({ file: 'b.ts' }), makeFinding({ file: 'c.ts' })]],
+      ]),
+    });
+    const totalFindings = metrics.trend.buckets.reduce((s, b) => s + b.findingCount, 0);
+    expect(totalFindings).toBe(1);
+  });
+
+  it('无 category 的 finding 归入 unknown', () => {
+    const findings: Finding[] = [
+      makeFinding({ category: undefined }),
+      makeFinding({ category: undefined }),
+    ];
+    const metrics = collectMetrics({ sessions: [], findings, feedback: new FeedbackStore() });
+    expect(metrics.quality.categoryDistribution.unknown).toBe(2);
+  });
 });
 
 // ==================== generateDashboardData 仪表盘数据 ====================

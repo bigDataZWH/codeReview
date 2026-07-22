@@ -5,9 +5,12 @@ import {
   parseReflectionResponse,
   reflectFindings,
   callLLM,
+  reflectFindingsWithRouter,
+  DEFAULT_REFLECTION_THRESHOLD,
 } from '../src/ai-reflection.js';
 import type { Finding, LLMProviderConfig } from '../src/types.js';
 import { isLLMConfigValid } from '../src/types.js';
+import { ModelRouter } from '../src/model-router.js';
 
 // ---- 辅助函数 ----
 
@@ -530,5 +533,563 @@ describe('isLLMConfigValid', () => {
 
   it('空字符串 model — 返回 false', () => {
     expect(isLLMConfigValid({ provider: 'openai', apiKey: 'key', model: '' })).toBe(false);
+  });
+});
+
+// ==================== 新增：parseReflectionResponse 边界情况 ====================
+describe('parseReflectionResponse 边界情况', () => {
+  it('仅含空白字符的响应 — 返回默认值 0.5', () => {
+    expect(parseReflectionResponse('   ')).toBe(0.5);
+    expect(parseReflectionResponse('\t\n  \n')).toBe(0.5);
+  });
+
+  it('批量响应中 item 为 null — 返回默认值 0.5', () => {
+    const response = JSON.stringify([null, { id: 1, confidence: 0.8 }]);
+    expect(parseReflectionResponse(response, 0)).toBe(0.5);
+    expect(parseReflectionResponse(response, 1)).toBe(0.8);
+  });
+
+  it('批量响应中 item 为 undefined — 返回默认值 0.5', () => {
+    const response = JSON.stringify([undefined, { id: 1, confidence: 0.7 }]);
+    expect(parseReflectionResponse(response, 0)).toBe(0.5);
+    expect(parseReflectionResponse(response, 1)).toBe(0.7);
+  });
+
+  it('批量响应中 item 缺少 confidence 字段 — 返回默认值 0.5', () => {
+    const response = JSON.stringify([{ id: 0 }, { id: 1, confidence: 0.6 }]);
+    expect(parseReflectionResponse(response, 0)).toBe(0.5);
+    expect(parseReflectionResponse(response, 1)).toBe(0.6);
+  });
+
+  it('index 为负数 — 返回默认值 0.5', () => {
+    const response = JSON.stringify([{ id: 0, confidence: 0.9 }]);
+    expect(parseReflectionResponse(response, -1)).toBe(0.5);
+    expect(parseReflectionResponse(response, -100)).toBe(0.5);
+  });
+
+  it('confidence 恰好为 0 — clamp 后为 0', () => {
+    expect(parseReflectionResponse('{"confidence": 0}')).toBe(0);
+  });
+
+  it('confidence 恰好为 1 — clamp 后为 1', () => {
+    expect(parseReflectionResponse('{"confidence": 1}')).toBe(1);
+  });
+
+  it('JSON 解析结果为数字 — 返回默认值 0.5', () => {
+    expect(parseReflectionResponse('42')).toBe(0.5);
+  });
+
+  it('JSON 解析结果为字符串 — 返回默认值 0.5', () => {
+    expect(parseReflectionResponse('"hello"')).toBe(0.5);
+  });
+
+  it('JSON 解析结果为布尔值 — 返回默认值 0.5', () => {
+    expect(parseReflectionResponse('true')).toBe(0.5);
+    expect(parseReflectionResponse('false')).toBe(0.5);
+  });
+
+  it('JSON 解析结果为 null — 返回默认值 0.5', () => {
+    expect(parseReflectionResponse('null')).toBe(0.5);
+  });
+
+  it('批量响应中 confidence 为字符串类型 — 返回默认值 0.5', () => {
+    const response = JSON.stringify([{ id: 0, confidence: '0.8' }]);
+    expect(parseReflectionResponse(response, 0)).toBe(0.5);
+  });
+});
+
+// ==================== 新增：buildReflectionPrompt 边界情况 ====================
+describe('buildReflectionPrompt 边界情况', () => {
+  it('suggestion 为空字符串 — 显示 N/A', () => {
+    const finding = makeFinding({
+      file: 'src/app.ts',
+      line: 10,
+      suggestion: '',
+    });
+    const prompt = buildReflectionPrompt(finding);
+    expect(prompt).toContain('Suggestion: N/A');
+  });
+
+  it('suggestion 为 undefined — 显示 N/A', () => {
+    const finding = makeFinding({
+      file: 'src/app.ts',
+      line: 10,
+    });
+    delete (finding as Partial<Finding>).suggestion;
+    const prompt = buildReflectionPrompt(finding);
+    expect(prompt).toContain('Suggestion: N/A');
+  });
+
+  it('包含所有 finding 字段 — 验证格式一致性', () => {
+    const finding = makeFinding({
+      file: 'src/test.ts',
+      line: 100,
+      severity: 'critical',
+      category: 'performance',
+      message: 'slow loop detected',
+      suggestion: 'use map instead',
+    });
+    const prompt = buildReflectionPrompt(finding);
+    expect(prompt).toContain('File: src/test.ts');
+    expect(prompt).toContain('Line: 100');
+    expect(prompt).toContain('Severity: critical');
+    expect(prompt).toContain('Category: performance');
+    expect(prompt).toContain('Message: slow loop detected');
+    expect(prompt).toContain('Suggestion: use map instead');
+  });
+});
+
+// ==================== 新增：buildBatchReflectionPrompt 边界情况 ====================
+describe('buildBatchReflectionPrompt 边界情况', () => {
+  it('单个 finding — 生成正确的批量 prompt', () => {
+    const findings = [makeFinding({ file: 'src/a.ts', line: 1, message: 'only one' })];
+    const prompt = buildBatchReflectionPrompt(findings);
+    expect(prompt).toContain('Finding #0');
+    expect(prompt).toContain('JSON array');
+    expect(prompt).toContain('only one');
+  });
+
+  it('suggestion 为 undefined 时批量 prompt 显示 N/A', () => {
+    const finding = makeFinding({ file: 'src/a.ts', line: 1 });
+    delete (finding as Partial<Finding>).suggestion;
+    const prompt = buildBatchReflectionPrompt([finding]);
+    expect(prompt).toContain('Suggestion: N/A');
+  });
+});
+
+// ==================== 新增：reflectFindings 边界情况 ====================
+describe('reflectFindings 边界情况', () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    if (originalFetch) {
+      globalThis.fetch = originalFetch;
+    }
+    vi.restoreAllMocks();
+  });
+
+  it('confidence 恰好等于阈值 — 保留（>= 比较）', async () => {
+    const findings = [makeFinding({ file: 'src/app.ts', line: 10, message: 'exact threshold' })];
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        choices: [{ message: { content: '{"confidence": 0.5}' } }],
+      }),
+    });
+    globalThis.fetch = mockFetch;
+
+    const result = await reflectFindings(findings, mockConfig, 0.5);
+    expect(result).toHaveLength(1);
+  });
+
+  it('使用默认阈值 DEFAULT_REFLECTION_THRESHOLD', async () => {
+    const findings = [
+      makeFinding({ file: 'src/a.ts', line: 1, message: 'high confidence' }),
+    ];
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        choices: [{ message: { content: '{"confidence": 0.7}' } }],
+      }),
+    });
+    globalThis.fetch = mockFetch;
+
+    const result = await reflectFindings(findings, mockConfig);
+    expect(result).toHaveLength(1);
+    expect(DEFAULT_REFLECTION_THRESHOLD).toBe(0.6);
+  });
+
+  it('HTTP 错误响应 — 降级保留所有 finding', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const findings = [makeFinding({ file: 'src/app.ts', line: 10, message: 'test' })];
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: 'Internal Server Error',
+    });
+    globalThis.fetch = mockFetch;
+
+    const result = await reflectFindings(findings, mockConfig, 0.5);
+    expect(result).toHaveLength(1);
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('自定义 baseURL — 使用指定的 baseURL', async () => {
+    const customConfig: LLMProviderConfig = {
+      provider: 'openai',
+      apiKey: 'test-key',
+      model: 'gpt-4',
+      baseURL: 'https://custom.example.com',
+    };
+    const findings = [makeFinding({ file: 'src/app.ts', line: 10, message: 'test' })];
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        choices: [{ message: { content: '{"confidence": 0.8}' } }],
+      }),
+    });
+    globalThis.fetch = mockFetch;
+
+    await reflectFindings(findings, customConfig, 0.5);
+    const [url] = mockFetch.mock.calls[0];
+    expect(url).toContain('custom.example.com');
+    expect(url).toContain('/v1/chat/completions');
+  });
+});
+
+// ==================== 新增：callLLM 边界情况 ====================
+describe('callLLM 边界情况', () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    if (originalFetch) {
+      globalThis.fetch = originalFetch;
+    }
+    vi.restoreAllMocks();
+  });
+
+  it('HTTP 401 错误 — 抛出包含状态码的错误', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      statusText: 'Unauthorized',
+    });
+    globalThis.fetch = mockFetch;
+
+    await expect(callLLM('test', mockConfig)).rejects.toThrow('401');
+    await expect(callLLM('test', mockConfig)).rejects.toThrow('Unauthorized');
+  });
+
+  it('自定义超时配置 — 验证超时参数存在', async () => {
+    const configWithTimeout: LLMProviderConfig = {
+      ...mockConfig,
+      timeout: 5000,
+    };
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        choices: [{ message: { content: '{"confidence": 0.8}' } }],
+      }),
+    });
+    globalThis.fetch = mockFetch;
+
+    const result = await callLLM('test prompt', configWithTimeout);
+    expect(result).toBe('{"confidence": 0.8}');
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const [, options] = mockFetch.mock.calls[0];
+    expect(options.signal).toBeDefined();
+  });
+});
+
+// ==================== 新增：reflectFindingsWithRouter ====================
+describe('reflectFindingsWithRouter', () => {
+  const originalFetch = globalThis.fetch;
+  let router: ModelRouter;
+
+  beforeEach(() => {
+    router = new ModelRouter();
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    if (originalFetch) {
+      globalThis.fetch = originalFetch;
+    }
+    vi.restoreAllMocks();
+  });
+
+  const smallConfig: LLMProviderConfig = {
+    provider: 'openai',
+    apiKey: 'small-key',
+    model: 'gpt-4o-mini',
+  };
+  const largeConfig: LLMProviderConfig = {
+    provider: 'openai',
+    apiKey: 'large-key',
+    model: 'gpt-4o-turbo',
+  };
+
+  function makeLowRiskFinding(file: string, line: number): Finding {
+    return makeFinding({
+      file,
+      line,
+      severity: 'low',
+      category: 'style',
+      message: 'minor style issue',
+      confidence: 0.9,
+    });
+  }
+
+  function makeHighRiskFinding(file: string, line: number): Finding {
+    return makeFinding({
+      file,
+      line,
+      severity: 'critical',
+      category: 'security',
+      message: 'critical security vulnerability detected in authentication flow with potential data breach',
+      confidence: 0.3,
+    });
+  }
+
+  it('空 findings — 返回空结果', async () => {
+    const result = await reflectFindingsWithRouter([], router, { small: smallConfig });
+    expect(result.findings).toEqual([]);
+    expect(result.routings).toEqual([]);
+    expect(result.sizeCounts).toEqual({});
+  });
+
+  it('基本功能 — 按复杂度路由并过滤低置信度', async () => {
+    const findings = [
+      makeLowRiskFinding('src/a.ts', 10),
+      makeHighRiskFinding('src/b.ts', 20),
+    ];
+
+    const mockFetch = vi.fn().mockImplementation((_url: string, options: RequestInit) => {
+      const body = JSON.parse(options.body as string);
+      if (body.model === 'gpt-4o-mini') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            choices: [{ message: { content: JSON.stringify([{ id: 0, confidence: 0.2 }]) } }],
+          }),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({
+          choices: [{ message: { content: JSON.stringify([{ id: 0, confidence: 0.9 }]) } }],
+        }),
+      });
+    });
+    globalThis.fetch = mockFetch;
+
+    const result = await reflectFindingsWithRouter(
+      findings,
+      router,
+      { small: smallConfig, large: largeConfig },
+      0.5,
+    );
+
+    expect(result.routings).toHaveLength(2);
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].file).toBe('src/b.ts');
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('保持原 findings 顺序', async () => {
+    const findings = [
+      makeHighRiskFinding('src/high1.ts', 1),
+      makeLowRiskFinding('src/low1.ts', 2),
+      makeHighRiskFinding('src/high2.ts', 3),
+    ];
+
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        choices: [{ message: { content: JSON.stringify([{ id: 0, confidence: 0.9 }]) } }],
+      }),
+    });
+    globalThis.fetch = mockFetch;
+
+    const result = await reflectFindingsWithRouter(
+      findings,
+      router,
+      { small: smallConfig, large: largeConfig },
+      0.5,
+    );
+
+    expect(result.findings).toHaveLength(3);
+    expect(result.findings[0].file).toBe('src/high1.ts');
+    expect(result.findings[1].file).toBe('src/low1.ts');
+    expect(result.findings[2].file).toBe('src/high2.ts');
+  });
+
+  it('sizeCounts 正确统计各分级数量', async () => {
+    const findings = [
+      makeLowRiskFinding('src/a.ts', 1),
+      makeLowRiskFinding('src/b.ts', 2),
+      makeHighRiskFinding('src/c.ts', 3),
+    ];
+
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        choices: [{ message: { content: JSON.stringify([{ id: 0, confidence: 0.8 }]) } }],
+      }),
+    });
+    globalThis.fetch = mockFetch;
+
+    const result = await reflectFindingsWithRouter(
+      findings,
+      router,
+      { small: smallConfig, large: largeConfig },
+      0.5,
+    );
+
+    expect(result.sizeCounts.small).toBe(2);
+    expect(result.sizeCounts.large).toBe(1);
+  });
+
+  it('无有效 LLM 配置 — 所有 finding 保留（降级）', async () => {
+    const mockFetch = vi.fn();
+    globalThis.fetch = mockFetch;
+
+    const findings = [
+      makeLowRiskFinding('src/a.ts', 1),
+      makeHighRiskFinding('src/b.ts', 2),
+    ];
+
+    const result = await reflectFindingsWithRouter(findings, router, {}, 0.5);
+    expect(result.findings).toHaveLength(2);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('部分分级无配置 — 向更高分级降级使用可用配置', async () => {
+    const findings = [
+      makeLowRiskFinding('src/low.ts', 1),
+      makeHighRiskFinding('src/high.ts', 2),
+    ];
+
+    let callCount = 0;
+    const mockFetch = vi.fn().mockImplementation((_url: string, options: RequestInit) => {
+      const body = JSON.parse(options.body as string);
+      expect(body.model).toBe('gpt-4o-turbo');
+      callCount++;
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({
+          choices: [{ message: { content: JSON.stringify([{ id: 0, confidence: 0.9 }]) } }],
+        }),
+      });
+    });
+    globalThis.fetch = mockFetch;
+
+    const result = await reflectFindingsWithRouter(
+      findings,
+      router,
+      { large: largeConfig },
+      0.5,
+    );
+
+    expect(result.findings).toHaveLength(2);
+    expect(callCount).toBe(2);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('某组 LLM 调用失败 — 该组降级保留所有 finding', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const findings = [
+      makeLowRiskFinding('src/low.ts', 1),
+      makeHighRiskFinding('src/high.ts', 2),
+    ];
+
+    const mockFetch = vi.fn().mockImplementation((_url: string, options: RequestInit) => {
+      const body = JSON.parse(options.body as string);
+      if (body.model === 'gpt-4o-mini') {
+        return Promise.reject(new Error('Network error'));
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({
+          choices: [{ message: { content: JSON.stringify([{ id: 0, confidence: 0.9 }]) } }],
+        }),
+      });
+    });
+    globalThis.fetch = mockFetch;
+
+    const result = await reflectFindingsWithRouter(
+      findings,
+      router,
+      { small: smallConfig, large: largeConfig },
+      0.5,
+    );
+
+    expect(result.findings).toHaveLength(2);
+    expect(warnSpy).toHaveBeenCalled();
+    const allCalls = warnSpy.mock.calls.map((c) => String(c[0]));
+    expect(allCalls.some((s) => s.includes('[ai-reflection]'))).toBe(true);
+    warnSpy.mockRestore();
+  });
+
+  it('使用默认阈值', async () => {
+    const findings = [makeLowRiskFinding('src/a.ts', 1)];
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        choices: [{ message: { content: JSON.stringify([{ id: 0, confidence: 0.7 }]) } }],
+      }),
+    });
+    globalThis.fetch = mockFetch;
+
+    const result = await reflectFindingsWithRouter(
+      findings,
+      router,
+      { small: smallConfig },
+    );
+
+    expect(result.findings).toHaveLength(1);
+    expect(DEFAULT_REFLECTION_THRESHOLD).toBe(0.6);
+  });
+
+  it('配置降级 — medium 缺失时使用 large 配置', async () => {
+    const mediumFinding = makeFinding({
+      file: 'src/medium.ts',
+      line: 10,
+      severity: 'high',
+      category: 'performance',
+      message: 'performance issue with moderate complexity',
+      confidence: 0.7,
+    });
+
+    const mockFetch = vi.fn().mockImplementation((_url: string, options: RequestInit) => {
+      const body = JSON.parse(options.body as string);
+      expect(body.model).toBe('gpt-4o-turbo');
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({
+          choices: [{ message: { content: JSON.stringify([{ id: 0, confidence: 0.8 }]) } }],
+        }),
+      });
+    });
+    globalThis.fetch = mockFetch;
+
+    const result = await reflectFindingsWithRouter(
+      [mediumFinding],
+      router,
+      { large: largeConfig },
+      0.5,
+    );
+
+    expect(result.findings).toHaveLength(1);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('routings 顺序与输入一致', async () => {
+    const findings = [
+      makeLowRiskFinding('src/a.ts', 1),
+      makeHighRiskFinding('src/b.ts', 2),
+      makeLowRiskFinding('src/c.ts', 3),
+    ];
+
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        choices: [{ message: { content: JSON.stringify([{ id: 0, confidence: 0.8 }]) } }],
+      }),
+    });
+    globalThis.fetch = mockFetch;
+
+    const result = await reflectFindingsWithRouter(
+      findings,
+      router,
+      { small: smallConfig, large: largeConfig },
+      0.5,
+    );
+
+    expect(result.routings).toHaveLength(3);
+    expect(result.routings[0].size).toBe('small');
+    expect(result.routings[1].size).toBe('large');
+    expect(result.routings[2].size).toBe('small');
   });
 });

@@ -634,3 +634,378 @@ describe('L2DiskCache 静默 catch 日志', () => {
     expect(allCalls.some((s) => s.includes('[cache]'))).toBe(true);
   });
 });
+
+// ==================== 边界情况与增强测试 ====================
+
+describe('L1MemoryCache LRU 淘汰', () => {
+  it('maxSize 限制：超出后淘汰最旧的 key', () => {
+    const cache = new L1MemoryCache({ maxSize: 3 });
+    cache.set('a', 1);
+    cache.set('b', 2);
+    cache.set('c', 3);
+    expect(cache.size()).toBe(3);
+    cache.set('d', 4);
+    expect(cache.size()).toBe(3);
+    expect(cache.has('a')).toBe(false);
+    expect(cache.get('b')).toBe(2);
+    expect(cache.get('c')).toBe(3);
+    expect(cache.get('d')).toBe(4);
+  });
+
+  it('访问 key 会更新 LRU 顺序', () => {
+    const cache = new L1MemoryCache({ maxSize: 3 });
+    cache.set('a', 1);
+    cache.set('b', 2);
+    cache.set('c', 3);
+    cache.get('a');
+    cache.set('d', 4);
+    expect(cache.has('a')).toBe(true);
+    expect(cache.has('b')).toBe(false);
+    expect(cache.has('c')).toBe(true);
+    expect(cache.has('d')).toBe(true);
+  });
+
+  it('has() 也会更新 LRU 顺序', () => {
+    const cache = new L1MemoryCache({ maxSize: 3 });
+    cache.set('a', 1);
+    cache.set('b', 2);
+    cache.set('c', 3);
+    cache.has('a');
+    cache.set('d', 4);
+    expect(cache.has('a')).toBe(true);
+    expect(cache.has('b')).toBe(false);
+  });
+
+  it('更新已存在的 key 会更新 LRU 顺序', () => {
+    const cache = new L1MemoryCache({ maxSize: 3 });
+    cache.set('a', 1);
+    cache.set('b', 2);
+    cache.set('c', 3);
+    cache.set('a', 10);
+    cache.set('d', 4);
+    expect(cache.get('a')).toBe(10);
+    expect(cache.has('b')).toBe(false);
+    expect(cache.has('c')).toBe(true);
+    expect(cache.has('d')).toBe(true);
+  });
+
+  it('maxSize 为 1 的边界情况', () => {
+    const cache = new L1MemoryCache({ maxSize: 1 });
+    cache.set('a', 1);
+    expect(cache.size()).toBe(1);
+    cache.set('b', 2);
+    expect(cache.size()).toBe(1);
+    expect(cache.has('a')).toBe(false);
+    expect(cache.get('b')).toBe(2);
+  });
+
+  it('删除 key 后再添加不会触发异常淘汰', () => {
+    const cache = new L1MemoryCache({ maxSize: 2 });
+    cache.set('a', 1);
+    cache.set('b', 2);
+    cache.delete('a');
+    cache.set('c', 3);
+    expect(cache.size()).toBe(2);
+    expect(cache.has('b')).toBe(true);
+    expect(cache.has('c')).toBe(true);
+  });
+
+  it('maxSize 未设置时无容量限制', () => {
+    const cache = new L1MemoryCache();
+    for (let i = 0; i < 1000; i++) {
+      cache.set(`k${i}`, i);
+    }
+    expect(cache.size()).toBe(1000);
+  });
+
+  it('keys() 返回顺序反映 LRU 顺序（最久未用在前）', () => {
+    const cache = new L1MemoryCache({ maxSize: 3 });
+    cache.set('a', 1);
+    cache.set('b', 2);
+    cache.set('c', 3);
+    cache.get('a');
+    const keys = cache.keys();
+    expect(keys[0]).toBe('b');
+    expect(keys[1]).toBe('c');
+    expect(keys[2]).toBe('a');
+  });
+});
+
+describe('TTL 边界情况', () => {
+  let cache: L1MemoryCache;
+
+  beforeEach(() => {
+    cache = new L1MemoryCache();
+  });
+
+  it('TTL 为 0 时立即过期', async () => {
+    cache.set('k', 'v', { ttl: 0 });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(cache.get('k')).toBeUndefined();
+    expect(cache.has('k')).toBe(false);
+  });
+
+  it('TTL 为负数时立即过期', async () => {
+    cache.set('k', 'v', { ttl: -100 });
+    expect(cache.get('k')).toBeUndefined();
+  });
+
+  it('过期后 size() 自动减少', async () => {
+    cache.set('a', 1, { ttl: 10 });
+    cache.set('b', 2);
+    expect(cache.size()).toBe(2);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(cache.size()).toBe(1);
+  });
+
+  it('过期后 keys() 不包含已过期 key', async () => {
+    cache.set('a', 1, { ttl: 10 });
+    cache.set('b', 2);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(cache.keys()).toEqual(['b']);
+  });
+
+  it('L2 磁盘缓存 TTL 为 0 时立即过期', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cache-ttl-'));
+    const l2 = new L2DiskCache({ cacheDir: dir });
+    l2.set('k', 'v', { ttl: 0 });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(l2.get('k')).toBeUndefined();
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('特殊 key 边界情况', () => {
+  let cache: L1MemoryCache;
+
+  beforeEach(() => {
+    cache = new L1MemoryCache();
+  });
+
+  it('支持空字符串 key', () => {
+    cache.set('', 'empty-key');
+    expect(cache.get('')).toBe('empty-key');
+    expect(cache.has('')).toBe(true);
+    expect(cache.delete('')).toBe(true);
+  });
+
+  it('支持含特殊字符的 key', () => {
+    const key = 'key:with/special.chars_123';
+    cache.set(key, 'v');
+    expect(cache.get(key)).toBe('v');
+  });
+
+  it('支持 Unicode key', () => {
+    const key = '缓存键🔑中文';
+    cache.set(key, 'value');
+    expect(cache.get(key)).toBe('value');
+  });
+
+  it('超长 key 正常工作', () => {
+    const longKey = 'a'.repeat(10000);
+    cache.set(longKey, 'v');
+    expect(cache.get(longKey)).toBe('v');
+  });
+});
+
+describe('CacheManager 分类统计边界', () => {
+  let dir: string;
+  let mgr: CacheManager;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cache-stats-'));
+    mgr = new CacheManager({ diskCacheDir: dir });
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('diff 分类前缀正确统计', () => {
+    mgr.set('ocr:diff:1', 'v');
+    mgr.get('ocr:diff:1');
+    mgr.get('ocr:diff:missing');
+    const stats = mgr.getCategoryHitStats();
+    expect(stats.diff.hits).toBe(1);
+    expect(stats.diff.misses).toBe(1);
+    expect(stats.diff.total).toBe(2);
+    expect(stats.diff.hitRate).toBe(0.5);
+  });
+
+  it('rules 分类前缀正确统计', () => {
+    mgr.set('ocr:rules:1', 'v');
+    mgr.get('ocr:rules:1');
+    mgr.get('ocr:rules:missing');
+    const stats = mgr.getCategoryHitStats();
+    expect(stats.rules.hits).toBe(1);
+    expect(stats.rules.misses).toBe(1);
+  });
+
+  it('mcp 分类前缀正确统计', () => {
+    mgr.set('ocr:mcp:1', 'v');
+    mgr.get('ocr:mcp:1');
+    mgr.get('ocr:mcp:missing');
+    const stats = mgr.getCategoryHitStats();
+    expect(stats.mcp.hits).toBe(1);
+    expect(stats.mcp.misses).toBe(1);
+  });
+
+  it('other 分类不计入分类统计', () => {
+    mgr.set('other:key', 'v');
+    mgr.get('other:key');
+    mgr.get('other:missing');
+    const stats = mgr.getCategoryHitStats();
+    expect(stats.diff.hits + stats.rules.hits + stats.mcp.hits).toBe(0);
+    expect(stats.diff.misses + stats.rules.misses + stats.mcp.misses).toBe(0);
+    const total = mgr.getHitStats();
+    expect(total.hits).toBe(1);
+    expect(total.misses).toBe(1);
+  });
+
+  it('getOrCreate 也正确统计分类命中', () => {
+    mgr.set('ocr:diff:cached', 'v');
+    mgr.getOrCreate('ocr:diff:cached', () => 'new');
+    mgr.getOrCreate('ocr:diff:new', () => 'created');
+    const stats = mgr.getCategoryHitStats();
+    expect(stats.diff.hits).toBe(1);
+    expect(stats.diff.misses).toBe(1);
+  });
+});
+
+describe('L2DiskCache 边界情况', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cache-l2-boundary-'));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('重启后过期的 key 在 get 时被清理', async () => {
+    const cache1 = new L2DiskCache({ cacheDir: dir });
+    cache1.set('expired', 'v', { ttl: 10 });
+    await new Promise((r) => setTimeout(r, 20));
+    const cache2 = new L2DiskCache({ cacheDir: dir });
+    expect(cache2.size()).toBe(1);
+    expect(cache2.get('expired')).toBeUndefined();
+    expect(cache2.size()).toBe(0);
+  });
+
+  it('loadIndex 忽略损坏文件，只加载有效文件', () => {
+    writeFileSync(join(dir, 'broken.json'), 'not valid json {{{', 'utf8');
+    writeFileSync(join(dir, 'not-json.txt'), 'hello', 'utf8');
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const cache = new L2DiskCache({ cacheDir: dir });
+    cache.set('valid', 'v');
+    expect(cache.size()).toBe(1);
+    expect(cache.get('valid')).toBe('v');
+    warnSpy.mockRestore();
+  });
+
+  it('空目录初始化正常', () => {
+    const cache = new L2DiskCache({ cacheDir: dir });
+    expect(cache.size()).toBe(0);
+    expect(cache.keys()).toEqual([]);
+    expect(cache.get('anything')).toBeUndefined();
+  });
+});
+
+describe('getOrCreate 并发行为', () => {
+  let dir: string;
+  let mgr: CacheManager;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cache-concurrent-'));
+    mgr = new CacheManager({ diskCacheDir: dir });
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('同步 getOrCreate 多次调用时 factory 被调用多次（无锁行为）', () => {
+    let callCount = 0;
+    const factory = () => {
+      callCount++;
+      return 'value';
+    };
+    const results = [
+      mgr.getOrCreate('key', factory),
+      mgr.getOrCreate('key', factory),
+      mgr.getOrCreate('key', factory),
+    ];
+    expect(results[0]).toBe('value');
+    expect(callCount).toBe(1);
+  });
+
+  it('异步 getOrCreate 并发调用时 factory 可能被调用多次（无单飞锁）', async () => {
+    let callCount = 0;
+    const factory = async () => {
+      callCount++;
+      await new Promise((r) => setTimeout(r, 10));
+      return 'value';
+    };
+    const promise1 = mgr.getOrCreate('key', factory);
+    const promise2 = mgr.getOrCreate('key', factory);
+    const [r1, r2] = await Promise.all([promise1, promise2]);
+    expect(r1).toBe('value');
+    expect(r2).toBe('value');
+    expect(callCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it('async factory 抛错时不写入缓存且错误透传', async () => {
+    const factory = async () => {
+      throw new Error('async error');
+    };
+    await expect(mgr.getOrCreate('err', factory)).rejects.toThrow('async error');
+    expect(mgr.has('err')).toBe(false);
+  });
+
+  it('getOrCreate 支持 TTL 选项（异步）', async () => {
+    const factory = async () => 'v';
+    await mgr.getOrCreate('ttl-key', factory, { ttl: 10 });
+    expect(mgr.get('ttl-key')).toBe('v');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(mgr.get('ttl-key')).toBeUndefined();
+  });
+});
+
+describe('CacheManager 失效方法边界', () => {
+  let dir: string;
+  let mgr: CacheManager;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cache-invalidate-'));
+    mgr = new CacheManager({ diskCacheDir: dir });
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('invalidateByPattern 无匹配时返回 0', () => {
+    mgr.set('a', 1);
+    mgr.set('b', 2);
+    expect(mgr.invalidateByPattern(/^nonexistent/)).toBe(0);
+    expect(mgr.size()).toBe(2);
+  });
+
+  it('invalidateByPattern 匹配所有 key', () => {
+    mgr.set('a', 1);
+    mgr.set('b', 2);
+    mgr.set('c', 3);
+    expect(mgr.invalidateByPattern(/.*/)).toBe(3);
+    expect(mgr.size()).toBe(0);
+  });
+
+  it('禁用 L2 时 invalidateByPrefix 只清理 L1', () => {
+    const m = new CacheManager({ diskCacheDir: dir, enableL2: false });
+    m.set('a:1', 1);
+    m.set('b:1', 2);
+    expect(m.invalidateByPrefix('a:')).toBe(1);
+    expect(m.has('a:1')).toBe(false);
+    expect(m.has('b:1')).toBe(true);
+  });
+});

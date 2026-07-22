@@ -12,18 +12,22 @@ import { ModelRouter, type RoutingResult } from './model-router.js';
  */
 export const DEFAULT_REFLECTION_THRESHOLD = 0.6;
 
+function formatFindingFields(f: Finding): string {
+  return `File: ${f.file}
+Line: ${f.line}
+Severity: ${f.severity}
+Category: ${f.category}
+Message: ${f.message}
+Suggestion: ${f.suggestion || 'N/A'}`;
+}
+
 /**
  * 为单个 finding 构建反思评估的 prompt。
  */
 export function buildReflectionPrompt(finding: Finding): string {
   return `You are a code review quality evaluator. Evaluate whether the following code review finding is a true positive or false positive.
 
-File: ${finding.file}
-Line: ${finding.line}
-Severity: ${finding.severity}
-Category: ${finding.category}
-Message: ${finding.message}
-Suggestion: ${finding.suggestion || 'N/A'}
+${formatFindingFields(finding)}
 
 Respond with JSON only:
 {"confidence": <float between 0 and 1>}
@@ -43,15 +47,7 @@ export function buildBatchReflectionPrompt(findings: Finding[]): string {
   }
 
   const sections = findings
-    .map((f, i) => {
-      return `Finding #${i}:
-File: ${f.file}
-Line: ${f.line}
-Severity: ${f.severity}
-Category: ${f.category}
-Message: ${f.message}
-Suggestion: ${f.suggestion || 'N/A'}`;
-    })
+    .map((f, i) => `Finding #${i}:\n${formatFindingFields(f)}`)
     .join('\n\n');
 
   return `You are a code review quality evaluator. Evaluate whether each of the following code review findings is a true positive or false positive.
@@ -74,6 +70,13 @@ function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
+function extractConfidence(obj: unknown): number | null {
+  if (obj && typeof obj === 'object' && typeof (obj as Record<string, unknown>).confidence === 'number') {
+    return clamp01((obj as Record<string, unknown>).confidence as number);
+  }
+  return null;
+}
+
 /**
  * 解析 LLM 返回的反思评估结果。
  * 期望 LLM 返回 JSON: { "confidence": 0.8 }
@@ -82,7 +85,7 @@ function clamp01(value: number): number {
  * 返回 confidence 值，解析失败时返回 0.5（中性默认值，不过滤）。
  */
 export function parseReflectionResponse(response: string, index?: number): number {
-  if (!response || response.trim() === '') {
+  if (typeof response !== 'string' || response.trim() === '') {
     return 0.5;
   }
 
@@ -90,28 +93,23 @@ export function parseReflectionResponse(response: string, index?: number): numbe
     const parsed = JSON.parse(response);
 
     if (Array.isArray(parsed)) {
-      // 批量响应
       if (index !== undefined && index >= 0 && index < parsed.length) {
-        const item = parsed[index];
-        if (item && typeof item.confidence === 'number') {
-          return clamp01(item.confidence);
-        }
+        const confidence = extractConfidence(parsed[index]);
+        if (confidence !== null) return confidence;
       }
       return 0.5;
     }
 
-    if (typeof parsed === 'object' && parsed !== null) {
-      if (typeof parsed.confidence === 'number') {
-        return clamp01(parsed.confidence);
-      }
-      return 0.5;
-    }
-
-    return 0.5;
+    const confidence = extractConfidence(parsed);
+    return confidence !== null ? confidence : 0.5;
   } catch (err) {
     console.warn('[ai-reflection] parseReflectionResponse failed to parse JSON:', err);
     return 0.5;
   }
+}
+
+function isRecord(obj: unknown): obj is Record<string, unknown> {
+  return obj !== null && typeof obj === 'object';
 }
 
 /**
@@ -119,29 +117,17 @@ export function parseReflectionResponse(response: string, index?: number): numbe
  */
 function extractContent(data: unknown): string {
   // OpenAI 协议
-  if (
-    data &&
-    typeof data === 'object' &&
-    'choices' in data &&
-    Array.isArray((data as Record<string, unknown>).choices)
-  ) {
-    const choices = (data as Record<string, unknown>).choices as Array<Record<string, unknown>>;
-    if (choices.length > 0 && choices[0].message) {
-      const message = choices[0].message as Record<string, unknown>;
-      if (typeof message.content === 'string') {
-        return message.content;
-      }
+  if (isRecord(data) && Array.isArray(data.choices)) {
+    const choices = data.choices as Array<Record<string, unknown>>;
+    const message = choices[0]?.message as Record<string, unknown> | undefined;
+    if (message && typeof message.content === 'string') {
+      return message.content;
     }
   }
 
   // Anthropic 协议
-  if (
-    data &&
-    typeof data === 'object' &&
-    'content' in data &&
-    Array.isArray((data as Record<string, unknown>).content)
-  ) {
-    const content = (data as Record<string, unknown>).content as Array<Record<string, unknown>>;
+  if (isRecord(data) && Array.isArray(data.content)) {
+    const content = data.content as Array<Record<string, unknown>>;
     const textBlock = content.find((block) => block.type === 'text');
     if (textBlock && typeof textBlock.text === 'string') {
       return textBlock.text;
@@ -149,20 +135,13 @@ function extractContent(data: unknown): string {
   }
 
   // Google 协议
-  if (
-    data &&
-    typeof data === 'object' &&
-    'candidates' in data &&
-    Array.isArray((data as Record<string, unknown>).candidates)
-  ) {
-    const candidates = (data as Record<string, unknown>).candidates as Array<Record<string, unknown>>;
-    if (candidates.length > 0 && candidates[0].content) {
-      const content = candidates[0].content as Record<string, unknown>;
-      if (content.parts && Array.isArray(content.parts)) {
-        const parts = content.parts as Array<Record<string, unknown>>;
-        if (parts.length > 0 && typeof parts[0].text === 'string') {
-          return parts[0].text;
-        }
+  if (isRecord(data) && Array.isArray(data.candidates)) {
+    const candidates = data.candidates as Array<Record<string, unknown>>;
+    const content = candidates[0]?.content as Record<string, unknown> | undefined;
+    if (content && Array.isArray(content.parts)) {
+      const parts = content.parts as Array<Record<string, unknown>>;
+      if (parts.length > 0 && typeof parts[0].text === 'string') {
+        return parts[0].text;
       }
     }
   }
@@ -242,6 +221,10 @@ export async function callLLM(prompt: string, config: LLMProviderConfig): Promis
         'x-goog-api-key': apiKey,
       };
       break;
+    }
+
+    default: {
+      throw new Error(`Unsupported LLM provider: ${provider}`);
     }
   }
 
@@ -350,11 +333,14 @@ function pickConfigForSize(
   size: 'small' | 'medium' | 'large',
   configMap: ModelConfigMap,
 ): LLMProviderConfig | undefined {
-  const order: Array<'small' | 'medium' | 'large'> = ['large', 'medium', 'small'];
-  // 先尝试精确匹配，再向 large 方向降级
-  const candidates: Array<'small' | 'medium' | 'large'> = [size, ...order.filter((s) => s !== size)];
-  for (const s of candidates) {
-    const cfg = configMap[s];
+  const sizes: Array<'small' | 'medium' | 'large'> = ['small', 'medium', 'large'];
+  const sizeIndex = sizes.indexOf(size);
+  for (let i = sizeIndex; i < sizes.length; i++) {
+    const cfg = configMap[sizes[i]];
+    if (cfg && isLLMConfigValid(cfg)) return cfg;
+  }
+  for (let i = sizeIndex - 1; i >= 0; i--) {
+    const cfg = configMap[sizes[i]];
     if (cfg && isLLMConfigValid(cfg)) return cfg;
   }
   return undefined;
@@ -389,11 +375,13 @@ export async function reflectFindingsWithRouter(
   // 1. 路由 + 分组
   const routings: RoutingResult[] = [];
   const groups = new Map<string, { findings: Finding[]; indices: number[] }>();
+  const sizeCounts: Record<string, number> = {};
   for (let i = 0; i < findings.length; i++) {
     const f = findings[i];
     const r = router.routeByComplexity(f);
     routings.push(r);
     const key = r.size;
+    sizeCounts[key] = (sizeCounts[key] ?? 0) + 1;
     if (!groups.has(key)) groups.set(key, { findings: [], indices: [] });
     const g = groups.get(key)!;
     g.findings.push(f);
@@ -401,10 +389,6 @@ export async function reflectFindingsWithRouter(
   }
 
   const threshold = minConfidence ?? DEFAULT_REFLECTION_THRESHOLD;
-  const sizeCounts: Record<string, number> = {};
-  for (const r of routings) {
-    sizeCounts[r.size] = (sizeCounts[r.size] ?? 0) + 1;
-  }
 
   // 2. 对每组调用对应 LLM 配置
   // 结果按原索引写入 kept 数组，保持顺序

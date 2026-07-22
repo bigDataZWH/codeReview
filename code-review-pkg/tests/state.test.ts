@@ -13,6 +13,7 @@ import {
   getFindingsByFile,
   resumeInterruptedSessions,
   getTrendStats,
+  getMetricsSummary,
   type SessionStatus,
 } from '../src/state.js';
 import type { Finding } from '../src/types.js';
@@ -669,5 +670,177 @@ describe('SessionStatus 类型与状态集合', () => {
     expect(valid).toContain('running');
     expect(valid).toContain('completed');
     expect(valid).toContain('failed');
+  });
+});
+
+describe('边界情况与防御性编程', () => {
+  let store: StateStore;
+
+  beforeEach(() => {
+    store = new StateStore();
+  });
+
+  describe('createSession 边界情况', () => {
+    it('filesTotal 为 0 时正常创建', () => {
+      const s = store.createSession({ id: 'zero-files', filesTotal: 0 });
+      expect(s.filesTotal).toBe(0);
+      expect(s.filesProcessed).toBe(0);
+    });
+
+    it('filesTotal 为负数时抛出错误', () => {
+      expect(() => store.createSession({ id: 'neg', filesTotal: -1 })).toThrow(/non-negative/);
+      expect(() => store.createSession({ id: 'neg2', filesTotal: -100 })).toThrow(/non-negative/);
+    });
+
+    it('id 为空字符串时正常创建（不做限制）', () => {
+      const s = store.createSession({ id: '', filesTotal: 1 });
+      expect(s.id).toBe('');
+      expect(store.getSession('')?.id).toBe('');
+    });
+
+    it('createdAt 为 0 时正常工作', () => {
+      const s = store.createSession({ id: 'epoch', filesTotal: 1, createdAt: 0 });
+      expect(s.createdAt).toBe(0);
+    });
+  });
+
+  describe('incrementFilesProcessed 边界情况', () => {
+    beforeEach(() => {
+      store.createSession({ id: 'inc', filesTotal: 10 });
+    });
+
+    it('count 为 0 时不改变数值但更新时间戳', () => {
+      const before = store.getSession('inc')!;
+      const result = store.incrementFilesProcessed('inc', 0);
+      expect(result?.filesProcessed).toBe(0);
+      expect(result?.updatedAt).toBeGreaterThanOrEqual(before.updatedAt);
+    });
+
+    it('count 为负数时抛出错误', () => {
+      expect(() => store.incrementFilesProcessed('inc', -1)).toThrow(/non-negative/);
+      expect(() => store.incrementFilesProcessed('inc', -5)).toThrow(/non-negative/);
+    });
+
+    it('filesProcessed 可以超过 filesTotal（不限制上限）', () => {
+      store.incrementFilesProcessed('inc', 15);
+      const s = store.getSession('inc');
+      expect(s?.filesProcessed).toBe(15);
+    });
+  });
+
+  describe('状态机边界情况', () => {
+    it('completed 终态不能转回 completed', () => {
+      store.createSession({ id: 'final-c', filesTotal: 1 });
+      store.updateSessionStatus('final-c', 'running');
+      store.updateSessionStatus('final-c', 'completed');
+      expect(() => store.updateSessionStatus('final-c', 'completed')).toThrow(/invalid|非法/);
+    });
+
+    it('failed 终态不能转回 failed', () => {
+      store.createSession({ id: 'final-f', filesTotal: 1 });
+      store.updateSessionStatus('final-f', 'running');
+      store.updateSessionStatus('final-f', 'failed', 'err');
+      expect(() => store.updateSessionStatus('final-f', 'failed')).toThrow(/invalid|非法/);
+    });
+
+    it('pending → failed 不传 error 时不设置 error', () => {
+      store.createSession({ id: 'pf', filesTotal: 1 });
+      const updated = store.updateSessionStatus('pf', 'failed');
+      expect(updated?.status).toBe('failed');
+      expect(updated?.error).toBeUndefined();
+    });
+  });
+
+  describe('getMetricsSummary 与 getTrendStats 等价性', () => {
+    it('空状态下两者返回相同', () => {
+      const a = store.getTrendStats();
+      const b = store.getMetricsSummary();
+      expect(a).toEqual(b);
+    });
+
+    it('有数据时两者返回相同', () => {
+      store.createSession({ id: 'eq1', filesTotal: 2 });
+      store.createSession({ id: 'eq2', filesTotal: 3 });
+      store.updateSessionStatus('eq1', 'running');
+      store.updateSessionStatus('eq1', 'completed');
+      store.saveFindings('eq1', [
+        makeFinding({ severity: 'critical', category: 'security' }),
+        makeFinding({ severity: 'high', category: 'performance' }),
+      ]);
+      const a = store.getTrendStats();
+      const b = store.getMetricsSummary();
+      expect(a).toEqual(b);
+    });
+
+    it('带 since 参数时两者返回相同', () => {
+      const now = Date.now();
+      store.createSession({ id: 'old', filesTotal: 1, createdAt: now - 100000 });
+      store.createSession({ id: 'new', filesTotal: 1, createdAt: now });
+      const a = store.getTrendStats({ since: now - 1000 });
+      const b = store.getMetricsSummary({ since: now - 1000 });
+      expect(a).toEqual(b);
+    });
+  });
+
+  describe('排序稳定性边界', () => {
+    it('listSessions 同 createdAt 按插入顺序倒序', () => {
+      const now = Date.now();
+      store.createSession({ id: 'first', filesTotal: 1, createdAt: now });
+      store.createSession({ id: 'second', filesTotal: 1, createdAt: now });
+      store.createSession({ id: 'third', filesTotal: 1, createdAt: now });
+      const list = store.listSessions();
+      expect(list.map((s) => s.id)).toEqual(['third', 'second', 'first']);
+    });
+
+    it('resumeInterruptedSessions 同 createdAt 按插入顺序升序', () => {
+      const now = Date.now();
+      store.createSession({ id: 'a', filesTotal: 1, createdAt: now });
+      store.createSession({ id: 'b', filesTotal: 1, createdAt: now });
+      store.updateSessionStatus('a', 'running');
+      store.updateSessionStatus('b', 'running');
+      const list = store.resumeInterruptedSessions();
+      expect(list.map((s) => s.id)).toEqual(['a', 'b']);
+    });
+  });
+
+  describe('持久化边界情况', () => {
+    let dir: string;
+
+    beforeEach(() => {
+      dir = mkdtempSync(join(tmpdir(), 'state-edge-'));
+    });
+
+    afterEach(() => {
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('persistFile 为 undefined 时为内存模式', () => {
+      const s = new StateStore({ persistFile: undefined });
+      expect(s.isPersistent()).toBe(false);
+    });
+
+    it('多次调用 flush 是安全的', () => {
+      const file = join(dir, 'multi-flush.json');
+      const s = new StateStore({ persistFile: file });
+      s.createSession({ id: 'mf', filesTotal: 1 });
+      s.flush();
+      s.flush();
+      s.flush();
+      expect(existsSync(file)).toBe(true);
+      const raw = JSON.parse(readFileSync(file, 'utf8'));
+      expect(raw.sessions).toHaveLength(1);
+    });
+
+    it('close 后 flush 写入空数据（内存已清空）', () => {
+      const file = join(dir, 'close-flush.json');
+      const s = new StateStore({ persistFile: file, autoFlush: false });
+      s.createSession({ id: 'cf', filesTotal: 1 });
+      s.close();
+      s.flush();
+      expect(existsSync(file)).toBe(true);
+      const raw = JSON.parse(readFileSync(file, 'utf8'));
+      expect(raw.sessions).toHaveLength(0);
+      expect(raw.findings).toHaveLength(0);
+    });
   });
 });

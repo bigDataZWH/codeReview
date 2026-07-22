@@ -12,7 +12,7 @@
 // - 安全风险强制升级到 large 模型，避免漏报
 // - token 估算委托给 token-counter.countTokens（CJK 感知的 GPT 启发式），与 prompt-builder.estimatePromptTokens 保持一致
 
-import type { FileDiff, Hunk } from './types.js';
+import type { FileDiff } from './types.js';
 import { countTokens } from './token-counter.js';
 
 /** 模型分级 */
@@ -111,31 +111,30 @@ export interface OptimizedPrompt {
   compressionRatio: number;
 }
 
-/** 单行注释正则 */
-const SINGLE_LINE_COMMENT_RE = /^\s*\/\//;
-/** 块注释正则（简化版） */
+const SINGLE_LINE_COMMENT_RE = /^\/\//;
 const BLOCK_COMMENT_RE = /\/\*[\s\S]*?\*\//;
-/** 块注释开始/结束标记检测 */
-const BLOCK_COMMENT_MARKER_RE = /^\s*\/\*|\*\/\s*$/;
+const BLOCK_COMMENT_MARKER_RE = /^\/\*|\*\/$/;
 
-/**
- * 检测一行是否为注释。
- */
 function isCommentLine(content: string): boolean {
   const trimmed = content.trim();
   if (SINGLE_LINE_COMMENT_RE.test(trimmed)) return true;
   if (BLOCK_COMMENT_MARKER_RE.test(trimmed)) return true;
   if (BLOCK_COMMENT_RE.test(trimmed)) return true;
-  // # 开头的注释（python、shell 等）
-  if (/^\s*#/.test(trimmed)) return false; // # 可能是合法语法（如 shell 变量），保守不过滤
   return false;
 }
 
-/**
- * 检测一行是否为空行（仅含空白字符）。
- */
 function isBlankLine(content: string): boolean {
   return content.trim() === '';
+}
+
+function shouldKeepLine(
+  content: string,
+  stripBlankLines: boolean,
+  stripComments: boolean,
+): boolean {
+  if (stripBlankLines && isBlankLine(content)) return false;
+  if (stripComments && isCommentLine(content)) return false;
+  return true;
 }
 
 /**
@@ -164,59 +163,42 @@ export function compressContext(
   const stripBlankLines = options.stripBlankLines ?? false;
   const contextLines = options.contextLines;
 
-  return diffs.map((diff) => {
-    const newHunks: Hunk[] = diff.hunks.map((hunk) => {
-      // 1. 先做行级过滤（空行、注释）
-      let filteredLines = hunk.lines.filter((line) => {
-        if (stripBlankLines && isBlankLine(line.content)) return false;
-        if (stripComments && isCommentLine(line.content)) return false;
-        return true;
-      });
+  return diffs.map((diff) => ({
+    ...diff,
+    hunks: diff.hunks.map((hunk) => {
+      let filteredLines = hunk.lines.filter((line) =>
+        shouldKeepLine(line.content, stripBlankLines, stripComments),
+      );
 
-      // 2. 上下文行裁剪：保留关键行（add/delete）周围 N 行 context
       if (contextLines !== undefined && contextLines >= 0) {
         const keyLineIndices = new Set<number>();
+        let hasKeyLine = false;
         for (let i = 0; i < filteredLines.length; i++) {
-          if (filteredLines[i].type === 'add' || filteredLines[i].type === 'delete') {
-            // 标记关键行及其周围 N 行 context
-            for (let j = Math.max(0, i - contextLines); j <= Math.min(filteredLines.length - 1, i + contextLines); j++) {
-              if (filteredLines[j].type === 'context' || filteredLines[j].type === 'add' || filteredLines[j].type === 'delete') {
-                keyLineIndices.add(j);
-              }
+          const line = filteredLines[i];
+          if (line.type === 'add' || line.type === 'delete') {
+            hasKeyLine = true;
+            const start = Math.max(0, i - contextLines);
+            const end = Math.min(filteredLines.length - 1, i + contextLines);
+            for (let j = start; j <= end; j++) {
+              keyLineIndices.add(j);
             }
           }
         }
-        // 如果没有任何关键行，保留全部（避免空 hunk）
-        const hasKeyLine = filteredLines.some((l) => l.type === 'add' || l.type === 'delete');
         if (hasKeyLine) {
           filteredLines = filteredLines.filter((_l, idx) => keyLineIndices.has(idx));
         }
       }
 
-      // 重新计算 hunk 的 oldCount / newCount
       let oldCount = 0;
       let newCount = 0;
       for (const l of filteredLines) {
-        if (l.type === 'context') {
-          oldCount++;
-          newCount++;
-        } else if (l.type === 'delete') {
-          oldCount++;
-        } else if (l.type === 'add') {
-          newCount++;
-        }
+        if (l.type !== 'add') oldCount++;
+        if (l.type !== 'delete') newCount++;
       }
 
-      return {
-        ...hunk,
-        lines: filteredLines,
-        oldCount,
-        newCount,
-      };
-    });
-
-    return { ...diff, hunks: newHunks };
-  });
+      return { ...hunk, lines: filteredLines, oldCount, newCount };
+    }),
+  }));
 }
 
 /**
@@ -236,22 +218,18 @@ export function selectModelByComplexity(
 ): ModelTier {
   const tiers = customTiers ?? DEFAULT_MODEL_TIERS;
   const tierList = Object.values(tiers).sort((a, b) => a.maxComplexity - b.maxComplexity);
+  const lastTier = tierList[tierList.length - 1];
 
-  // 安全风险强制 large
   if (metrics.hasSecurityRisk) {
-    // 找到 tier 名为 'large' 或最后一个 tier
-    const large = tierList.find((t) => t.tier === 'large') ?? tierList[tierList.length - 1];
-    return large;
+    return tierList.find((t) => t.tier === 'large') ?? lastTier;
   }
 
-  // 按 complexityScore 选择
   for (const tier of tierList) {
     if (metrics.complexityScore <= tier.maxComplexity) {
       return tier;
     }
   }
-  // 兜底：返回最后一个 tier
-  return tierList[tierList.length - 1];
+  return lastTier;
 }
 
 /**
@@ -355,12 +333,7 @@ export function optimizePrompt(
   }
 
   const lines = prompt.split('\n');
-  const filtered = lines.filter((line) => {
-    if (stripBlankLines && isBlankLine(line)) return false;
-    if (stripComments && isCommentLine(line)) return false;
-    return true;
-  });
-
+  const filtered = lines.filter((line) => shouldKeepLine(line, stripBlankLines, stripComments));
   const optimized = filtered.join('\n');
   const optimizedLength = optimized.length;
 

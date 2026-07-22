@@ -99,6 +99,8 @@ export type ProgressListener<K extends ProgressEvent> = (
   payload: ProgressPayloadMap[K],
 ) => void;
 
+type AnyProgressListener = ProgressListener<ProgressEvent>;
+
 /**
  * 渐进式输出事件发射器。
  *
@@ -114,41 +116,25 @@ export type ProgressListener<K extends ProgressEvent> = (
  * ```
  */
 export class ProgressEmitter {
-  /** 事件 → 监听器集合 */
   private listeners: Map<ProgressEvent, Set<ListenerEntry>> = new Map();
-  /** 总文件数（来自 start 事件） */
   private totalFiles = 0;
-  /** 已处理文件数（file-complete + file-error） */
   private processedFiles = 0;
-  /** 是否已触发 start */
   private started = false;
-  /** 是否已触发 complete */
   private completed = false;
 
-  /**
-   * 注册事件监听器。
-   * @param event 事件名称
-   * @param listener 监听器函数
-   */
   on<K extends ProgressEvent>(event: K, listener: ProgressListener<K>): this {
     return this.addListener(event, listener, false);
   }
 
-  /**
-   * 注册一次性事件监听器（触发后自动移除）。
-   */
   once<K extends ProgressEvent>(event: K, listener: ProgressListener<K>): this {
     return this.addListener(event, listener, true);
   }
 
-  /**
-   * 取消事件监听器。
-   */
   off<K extends ProgressEvent>(event: K, listener: ProgressListener<K>): this {
     const set = this.listeners.get(event);
     if (!set) return this;
     for (const entry of set) {
-      if (entry.fn === listener || entry.wrapped === listener) {
+      if (entry.matches(listener as AnyProgressListener)) {
         set.delete(entry);
         break;
       }
@@ -156,7 +142,6 @@ export class ProgressEmitter {
     return this;
   }
 
-  /** 内部添加监听器实现 */
   private addListener<K extends ProgressEvent>(
     event: K,
     listener: ProgressListener<K>,
@@ -167,42 +152,15 @@ export class ProgressEmitter {
       set = new Set();
       this.listeners.set(event, set);
     }
-    // once 包装：触发后自动 off
-    const entry: ListenerEntry = once
-      ? {
-          once: true,
-          fn: ((payload: ProgressPayloadMap[K]) => {
-            this.off(event, listener);
-            listener(payload);
-          }) as unknown as ProgressListener<ProgressEvent>,
-          wrapped: listener as unknown as ProgressListener<ProgressEvent>,
-        }
-      : {
-          once: false,
-          fn: listener as ProgressListener<ProgressEvent>,
-          wrapped: undefined,
-        };
-    set.add(entry);
+    set.add(new ListenerEntry(listener as AnyProgressListener, once, () => this.off(event, listener)));
     return this;
   }
 
-  /**
-   * 触发事件。
-   *
-   * 内部维护 totalFiles/processedFiles 计数：
-   * - start：记录 totalFiles
-   * - file-complete / file-error：累加 processedFiles
-   * - complete：标记完成
-   *
-   * 监听器抛出的错误被吞掉，避免单监听器故障中断整体流程。
-   */
   emit<K extends ProgressEvent>(event: K, payload: ProgressPayloadMap[K]): this {
-    // 内部状态维护
     this.updateState(event, payload);
 
     const set = this.listeners.get(event);
     if (!set || set.size === 0) return this;
-    // 拷贝一份避免 once 触发时迭代过程中修改集合
     const list = Array.from(set);
     for (const entry of list) {
       try {
@@ -214,12 +172,11 @@ export class ProgressEmitter {
     return this;
   }
 
-  /** 根据 emit 的事件更新内部计数 */
   private updateState<K extends ProgressEvent>(event: K, payload: ProgressPayloadMap[K]): void {
     switch (event) {
       case 'start': {
         const p = payload as StartPayload;
-        this.totalFiles = p.totalFiles;
+        this.totalFiles = Math.max(0, p.totalFiles);
         this.processedFiles = 0;
         this.started = true;
         this.completed = false;
@@ -227,13 +184,14 @@ export class ProgressEmitter {
       }
       case 'file-complete':
       case 'file-error': {
-        // 防止重复累加（同一 index 多次触发不应重复计）
-        // 简化策略：仅按事件次数累加，调用方需保证事件语义正确
-        this.processedFiles += 1;
+        if (this.processedFiles < this.totalFiles || this.totalFiles === 0) {
+          this.processedFiles += 1;
+        }
         break;
       }
       case 'complete': {
         this.completed = true;
+        this.processedFiles = this.totalFiles;
         break;
       }
       default:
@@ -241,28 +199,18 @@ export class ProgressEmitter {
     }
   }
 
-  /**
-   * 返回当前进度百分比（0-100，整数）。
-   * - 未 start 时返回 0
-   * - totalFiles=0 时返回 100（无文件即完成）
-   * - complete 事件触发后固定返回 100
-   */
   getProgress(): number {
     if (this.completed) return 100;
     if (!this.started) return 0;
-    if (this.totalFiles === 0) return 100;
-    const pct = Math.floor((this.processedFiles / this.totalFiles) * 100);
-    if (pct > 100) return 100;
-    if (pct < 0) return 0;
-    return pct;
+    if (this.totalFiles <= 0) return 100;
+    const ratio = this.processedFiles / this.totalFiles;
+    return Math.min(100, Math.max(0, Math.floor(ratio * 100)));
   }
 
-  /** 返回指定事件的监听器数量 */
   listenerCount(event: ProgressEvent): number {
     return this.listeners.get(event)?.size ?? 0;
   }
 
-  /** 清空指定事件的所有监听器（不传则清空所有） */
   removeAllListeners(event?: ProgressEvent): this {
     if (event) {
       this.listeners.delete(event);
@@ -273,10 +221,30 @@ export class ProgressEmitter {
   }
 }
 
-/** 内部监听器条目 */
-interface ListenerEntry {
-  once: boolean;
-  fn: ProgressListener<ProgressEvent>;
-  /** once 模式下原始监听器引用（用于 off 比对） */
-  wrapped?: ProgressListener<ProgressEvent>;
+class ListenerEntry {
+  readonly fn: AnyProgressListener;
+  readonly once: boolean;
+  private readonly original: AnyProgressListener | undefined;
+
+  constructor(
+    listener: AnyProgressListener,
+    once: boolean,
+    onTrigger: () => void,
+  ) {
+    this.once = once;
+    if (once) {
+      this.original = listener;
+      this.fn = (payload) => {
+        onTrigger();
+        listener(payload);
+      };
+    } else {
+      this.original = undefined;
+      this.fn = listener;
+    }
+  }
+
+  matches(listener: AnyProgressListener): boolean {
+    return this.fn === listener || this.original === listener;
+  }
 }

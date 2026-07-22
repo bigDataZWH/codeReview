@@ -669,3 +669,384 @@ describe('loadReviewIgnorePatterns', () => {
     warnSpy.mockRestore();
   });
 });
+
+// ── 边界情况测试 ──
+
+describe('detectLanguage 边界情况', () => {
+  it('空字符串路径返回 undefined', () => {
+    expect(detectLanguage('')).toBeUndefined();
+  });
+
+  it('只有扩展名的文件正确识别', () => {
+    expect(detectLanguage('.gitignore')).toBeUndefined();
+    expect(detectLanguage('.eslintrc.json')).toBe('json');
+  });
+
+  it('多级扩展名取最后一个扩展名', () => {
+    expect(detectLanguage('archive.tar.gz')).toBeUndefined();
+    expect(detectLanguage('file.spec.ts')).toBe('typescript');
+    expect(detectLanguage('component.test.tsx')).toBe('typescript');
+  });
+
+  it('路径以斜杠开头正确处理', () => {
+    expect(detectLanguage('/src/app.ts')).toBe('typescript');
+    expect(detectLanguage('/absolute/path/file.py')).toBe('python');
+  });
+
+  it('大小写不敏感的扩展名检测', () => {
+    expect(detectLanguage('file.TS')).toBe('typescript');
+    expect(detectLanguage('file.PY')).toBe('python');
+    expect(detectLanguage('FILE.JS')).toBe('javascript');
+  });
+
+  it('特殊文件名不区分大小写', () => {
+    expect(detectLanguage('DOCKERFILE')).toBe('dockerfile');
+    expect(detectLanguage('Dockerfile.Prod')).toBe('dockerfile');
+    expect(detectLanguage('MAKEFILE')).toBe('makefile');
+    expect(detectLanguage('JENKINSFILE')).toBe('groovy');
+  });
+});
+
+describe('filterFiles 边界情况', () => {
+  it('maxFiles 为 0 时返回空数组', () => {
+    const diffs: FileDiff[] = [
+      makeDiff('src/a.ts'),
+      makeDiff('src/b.ts'),
+    ];
+    const result = filterFiles(diffs, { maxFiles: 0 });
+    expect(result).toEqual([]);
+  });
+
+  it('maxFiles 为负数时按 slice 语义截断', () => {
+    const diffs: FileDiff[] = [
+      makeDiff('src/a.ts'),
+      makeDiff('src/b.ts'),
+      makeDiff('src/c.ts'),
+    ];
+    const result = filterFiles(diffs, { maxFiles: -1 });
+    expect(result).toHaveLength(2);
+    expect(result.map((d) => d.path)).toEqual(['src/a.ts', 'src/b.ts']);
+  });
+
+  it('maxPatchLength 为 0 时只保留空 patch 文件', () => {
+    const emptyDiff = makeDiff('src/empty.ts');
+    emptyDiff.hunks = [];
+
+    const nonEmptyDiff = makeDiff('src/nonempty.ts');
+    nonEmptyDiff.hunks = [{
+      oldStart: 1, oldCount: 1, newStart: 1, newCount: 1, header: '',
+      lines: [{ type: 'context', content: 'x', oldLineNumber: 1, newLineNumber: 1 }],
+    }];
+
+    const result = filterFiles([emptyDiff, nonEmptyDiff], { maxPatchLength: 0 });
+    expect(result).toHaveLength(1);
+    expect(result[0].path).toBe('src/empty.ts');
+  });
+
+  it('maxPatchLength 为负数时过滤掉所有文件', () => {
+    const diff = makeDiff('src/big.ts');
+    diff.hunks = [{
+      oldStart: 1, oldCount: 1, newStart: 1, newCount: 1, header: '',
+      lines: [{ type: 'context', content: 'x'.repeat(1000), oldLineNumber: 1, newLineNumber: 1 }],
+    }];
+
+    const emptyDiff = makeDiff('src/empty.ts');
+    emptyDiff.hunks = [];
+
+    const result = filterFiles([diff, emptyDiff], { maxPatchLength: -100 });
+    expect(result).toHaveLength(0);
+  });
+
+  it('language 为空数组时不过滤', () => {
+    const diffs: FileDiff[] = [
+      makeDiff('src/app.ts'),
+      makeDiff('src/style.css'),
+    ];
+    const result = filterFiles(diffs, { language: [] });
+    expect(result).toHaveLength(2);
+  });
+
+  it('includePatterns 为空数组时不过滤', () => {
+    const diffs: FileDiff[] = [
+      makeDiff('src/app.ts'),
+      makeDiff('README.md'),
+    ];
+    const result = filterFiles(diffs, { includePatterns: [] });
+    expect(result).toHaveLength(2);
+  });
+
+  it('ignorePatterns 为空数组时使用默认忽略模式', () => {
+    const diffs: FileDiff[] = [
+      makeDiff('src/app.min.js'),
+      makeDiff('src/app.ts'),
+    ];
+    const result = filterFiles(diffs, { ignorePatterns: [] });
+    expect(result).toHaveLength(1);
+    expect(result[0].path).toBe('src/app.ts');
+  });
+
+  it('所有文件都被过滤时返回空数组', () => {
+    const diffs: FileDiff[] = [
+      makeDiff('src/a.test.ts'),
+      makeDiff('src/b.test.ts'),
+    ];
+    const result = filterFiles(diffs, { includePatterns: ['**/*.ts', '!**/*.test.ts'] });
+    expect(result).toEqual([]);
+  });
+
+  it('binary 为 undefined 时视为非二进制', () => {
+    const diff = makeDiff('src/app.ts');
+    diff.binary = undefined;
+    const result = filterFiles([diff], {});
+    expect(result).toHaveLength(1);
+  });
+});
+
+describe('bundleFiles 边界情况', () => {
+  it('rule.related 为空数组时只包含 primary', () => {
+    const diffs: FileDiff[] = [
+      makeDiff('src/app.ts'),
+      makeDiff('src/utils.ts'),
+    ];
+    const result = bundleFiles(diffs, {
+      bundles: [
+        {
+          name: 'single',
+          pattern: '(.*)\\.ts',
+          related: [],
+        },
+      ],
+    });
+    expect(result).toHaveLength(2);
+    for (const bundle of result) {
+      expect(bundle.related).toHaveLength(0);
+    }
+  });
+
+  it('多个相关模式都能正确匹配', () => {
+    const diffs: FileDiff[] = [
+      makeDiff('src/Component.tsx'),
+      makeDiff('src/Component.css'),
+      makeDiff('src/Component.test.tsx'),
+      makeDiff('src/other.ts'),
+    ];
+    const result = bundleFiles(diffs, {
+      bundles: [
+        {
+          name: 'component',
+          pattern: '(.*)\\.tsx',
+          related: ['$1.css', '$1.test.tsx'],
+        },
+      ],
+    });
+    const componentBundle = result.find((b) => b.primary.path === 'src/Component.tsx');
+    expect(componentBundle).toBeDefined();
+    expect(componentBundle!.related).toHaveLength(2);
+    expect(componentBundle!.related.map((r) => r.path).sort()).toEqual([
+      'src/Component.css',
+      'src/Component.test.tsx',
+    ]);
+  });
+
+  it('相关文件不存在时不报错', () => {
+    const diffs: FileDiff[] = [
+      makeDiff('src/app.ts'),
+    ];
+    const result = bundleFiles(diffs, {
+      bundles: [
+        {
+          name: 'test-pair',
+          pattern: '(.*)\\.ts',
+          related: ['$1.test.ts'],
+        },
+      ],
+    });
+    expect(result).toHaveLength(1);
+    expect(result[0].related).toHaveLength(0);
+  });
+
+  it('config 为 undefined 时每个文件独立 bundle', () => {
+    const diffs: FileDiff[] = [
+      makeDiff('src/a.ts'),
+      makeDiff('src/b.ts'),
+    ];
+    const result = bundleFiles(diffs, undefined);
+    expect(result).toHaveLength(2);
+  });
+
+  it('bundles 为空数组时每个文件独立 bundle', () => {
+    const diffs: FileDiff[] = [
+      makeDiff('src/a.ts'),
+      makeDiff('src/b.ts'),
+    ];
+    const result = bundleFiles(diffs, { bundles: [] });
+    expect(result).toHaveLength(2);
+  });
+});
+
+describe('excludeGeneratedFiles 边界情况', () => {
+  it('删除行包含 @generated 时保留文件', () => {
+    const diff: FileDiff = {
+      path: 'src/legacy.ts',
+      status: 'modified',
+      hunks: [{
+        oldStart: 1, oldCount: 2, newStart: 1, newCount: 1, header: '',
+        lines: [
+          { type: 'delete', content: '// @generated old code', oldLineNumber: 1 },
+          { type: 'add', content: '// new code', newLineNumber: 1 },
+        ],
+      }],
+    };
+    const result = excludeGeneratedFiles([diff]);
+    expect(result).toHaveLength(1);
+  });
+
+  it('空 hunks 的文件保留', () => {
+    const diff: FileDiff = {
+      path: 'src/empty.ts',
+      status: 'added',
+      hunks: [],
+    };
+    const result = excludeGeneratedFiles([diff]);
+    expect(result).toHaveLength(1);
+  });
+
+  it('空 lines 的 hunk 不影响结果', () => {
+    const diff: FileDiff = {
+      path: 'src/empty-hunk.ts',
+      status: 'modified',
+      hunks: [{
+        oldStart: 1, oldCount: 0, newStart: 1, newCount: 0, header: '',
+        lines: [],
+      }],
+    };
+    const result = excludeGeneratedFiles([diff]);
+    expect(result).toHaveLength(1);
+  });
+
+  it('@generated 不区分大小写', () => {
+    const diff1: FileDiff = {
+      path: 'src/upper.ts',
+      status: 'modified',
+      hunks: [{
+        oldStart: 1, oldCount: 1, newStart: 1, newCount: 1, header: '',
+        lines: [{ type: 'context', content: '// @GENERATED', oldLineNumber: 1, newLineNumber: 1 }],
+      }],
+    };
+    const diff2: FileDiff = {
+      path: 'src/mixed.ts',
+      status: 'modified',
+      hunks: [{
+        oldStart: 1, oldCount: 1, newStart: 1, newCount: 1, header: '',
+        lines: [{ type: 'add', content: '// @Generated', newLineNumber: 1 }],
+      }],
+    };
+    const result = excludeGeneratedFiles([diff1, diff2]);
+    expect(result).toHaveLength(0);
+  });
+});
+
+describe('groupByDirectory 边界情况', () => {
+  it('根目录文件归到 "." 组', () => {
+    const diffs: FileDiff[] = [
+      { path: 'README.md', status: 'modified', hunks: [] },
+      { path: 'package.json', status: 'modified', hunks: [] },
+    ];
+    const groups = groupByDirectory(diffs);
+    expect(groups.get('.')).toHaveLength(2);
+  });
+
+  it('深层嵌套目录正确分组', () => {
+    const diffs: FileDiff[] = [
+      { path: 'a/b/c/d/e.ts', status: 'modified', hunks: [] },
+      { path: 'a/b/c/d/f.ts', status: 'modified', hunks: [] },
+      { path: 'a/b/x.ts', status: 'modified', hunks: [] },
+    ];
+    const groups = groupByDirectory(diffs);
+    expect(groups.get('a/b/c/d')).toHaveLength(2);
+    expect(groups.get('a/b')).toHaveLength(1);
+  });
+
+  it('路径以斜杠结尾的处理', () => {
+    const diffs: FileDiff[] = [
+      { path: 'src/utils/', status: 'modified', hunks: [] },
+    ];
+    const groups = groupByDirectory(diffs);
+    expect(groups.size).toBe(1);
+  });
+});
+
+describe('sortByPatchSize 边界情况', () => {
+  it('相同大小的文件保持相对顺序（稳定排序）', () => {
+    const makeSameSizeDiff = (path: string): FileDiff => {
+      const diff = makeDiff(path);
+      diff.hunks = [{
+        oldStart: 1, oldCount: 1, newStart: 1, newCount: 1, header: '',
+        lines: [{ type: 'context', content: '12345', oldLineNumber: 1, newLineNumber: 1 }],
+      }];
+      return diff;
+    };
+    const diffs: FileDiff[] = [
+      makeSameSizeDiff('a.ts'),
+      makeSameSizeDiff('b.ts'),
+      makeSameSizeDiff('c.ts'),
+    ];
+    const sorted = sortByPatchSize(diffs);
+    expect(sorted.map((d) => d.path)).toEqual(['a.ts', 'b.ts', 'c.ts']);
+  });
+
+  it('空 hunks 的文件排最后', () => {
+    const emptyDiff = makeDiff('empty.ts');
+    emptyDiff.hunks = [];
+
+    const smallDiff = makeDiff('small.ts');
+    smallDiff.hunks = [{
+      oldStart: 1, oldCount: 1, newStart: 1, newCount: 1, header: '',
+      lines: [{ type: 'add', content: 'x', newLineNumber: 1 }],
+    }];
+
+    const sorted = sortByPatchSize([emptyDiff, smallDiff]);
+    expect(sorted[0].path).toBe('small.ts');
+    expect(sorted[1].path).toBe('empty.ts');
+  });
+});
+
+describe('getLanguageStats 边界情况', () => {
+  it('所有文件未知语言时统计为 unknown', () => {
+    const diffs: FileDiff[] = [
+      makeDiff('file1.xyz'),
+      makeDiff('file2.abc'),
+      makeDiff('noext'),
+    ];
+    const stats = getLanguageStats(diffs);
+    expect(stats).toHaveLength(1);
+    expect(stats[0]).toEqual({ language: 'unknown', count: 3 });
+  });
+
+  it('多种语言按数量降序排列', () => {
+    const diffs: FileDiff[] = [
+      makeDiff('a.ts'),
+      makeDiff('b.ts'),
+      makeDiff('c.py'),
+      makeDiff('d.go'),
+      makeDiff('e.py'),
+      makeDiff('f.ts'),
+    ];
+    const stats = getLanguageStats(diffs);
+    expect(stats[0]).toEqual({ language: 'typescript', count: 3 });
+    expect(stats[1]).toEqual({ language: 'python', count: 2 });
+    expect(stats[2]).toEqual({ language: 'go', count: 1 });
+  });
+
+  it('相同数量的语言顺序不保证但都存在', () => {
+    const diffs: FileDiff[] = [
+      makeDiff('a.ts'),
+      makeDiff('b.py'),
+    ];
+    const stats = getLanguageStats(diffs);
+    expect(stats).toHaveLength(2);
+    const langs = stats.map((s) => s.language);
+    expect(langs).toContain('typescript');
+    expect(langs).toContain('python');
+  });
+});

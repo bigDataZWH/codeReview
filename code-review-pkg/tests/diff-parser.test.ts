@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseDiff, getHunkContext, computeDiffStats, getChangedFiles, getPatchSize, mergeDiffs, parseDiffStat, filterDiffsByPath, stripAnsiEscapes, isOnlyWhitespaceChange } from '../src/diff-parser.js';
+import { parseDiff, getHunkContext, computeDiffStats, getChangedFiles, getPatchSize, mergeDiffs, parseDiffStat, filterDiffsByPath, stripAnsiEscapes, isOnlyWhitespaceChange, getAdditions, getDeletions, hasSignificantChanges } from '../src/diff-parser.js';
 import type { FileDiff } from '../src/types.js';
 
 describe('diff-parser', () => {
@@ -954,6 +954,450 @@ index 111..222 100644
     it('无 hunks 返回 false', () => {
       const diff: FileDiff = { path: 'a.ts', status: 'modified', hunks: [] };
       expect(isOnlyWhitespaceChange(diff)).toBe(false);
+    });
+  });
+
+  // getAdditions
+  describe('getAdditions', () => {
+    it('返回所有新增行', () => {
+      const diff = parseDiff(`diff --git a/file.ts b/file.ts
+index 111..222 100644
+--- a/file.ts
++++ b/file.ts
+@@ -1,3 +1,5 @@
+ line1
++added1
+ line2
++added2
+ line3`)[0];
+      const additions = getAdditions(diff);
+      expect(additions).toHaveLength(2);
+      expect(additions[0].content).toBe('added1');
+      expect(additions[1].content).toBe('added2');
+    });
+
+    it('无新增行时返回空数组', () => {
+      const diff = parseDiff(`diff --git a/file.ts b/file.ts
+index 111..222 100644
+--- a/file.ts
++++ b/file.ts
+@@ -1,2 +1,1 @@
+ line1
+-line2`)[0];
+      expect(getAdditions(diff)).toHaveLength(0);
+    });
+
+    it('空 hunks 返回空数组', () => {
+      const diff: FileDiff = { path: 'empty.ts', status: 'modified', hunks: [] };
+      expect(getAdditions(diff)).toHaveLength(0);
+    });
+
+    it('多 hunk 时正确汇总所有新增行', () => {
+      const diff = parseDiff(`diff --git a/file.ts b/file.ts
+index 111..222 100644
+--- a/file.ts
++++ b/file.ts
+@@ -1,2 +1,3 @@
+ line1
++add1
+ line2
+@@ -10,2 +11,3 @@
+ line10
++add2
+ line11`)[0];
+      const additions = getAdditions(diff);
+      expect(additions).toHaveLength(2);
+      expect(additions[0].content).toBe('add1');
+      expect(additions[1].content).toBe('add2');
+    });
+  });
+
+  // getDeletions
+  describe('getDeletions', () => {
+    it('返回所有删除行', () => {
+      const diff = parseDiff(`diff --git a/file.ts b/file.ts
+index 111..222 100644
+--- a/file.ts
++++ b/file.ts
+@@ -1,5 +1,3 @@
+ line1
+-deleted1
+ line2
+-deleted2
+ line3`)[0];
+      const deletions = getDeletions(diff);
+      expect(deletions).toHaveLength(2);
+      expect(deletions[0].content).toBe('deleted1');
+      expect(deletions[1].content).toBe('deleted2');
+    });
+
+    it('无删除行时返回空数组', () => {
+      const diff = parseDiff(`diff --git a/file.ts b/file.ts
+index 111..222 100644
+--- a/file.ts
++++ b/file.ts
+@@ -1,1 +1,2 @@
+ line1
++line2`)[0];
+      expect(getDeletions(diff)).toHaveLength(0);
+    });
+
+    it('空 hunks 返回空数组', () => {
+      const diff: FileDiff = { path: 'empty.ts', status: 'modified', hunks: [] };
+      expect(getDeletions(diff)).toHaveLength(0);
+    });
+
+    it('多 hunk 时正确汇总所有删除行', () => {
+      const diff = parseDiff(`diff --git a/file.ts b/file.ts
+index 111..222 100644
+--- a/file.ts
++++ b/file.ts
+@@ -1,3 +1,2 @@
+ line1
+-del1
+ line2
+@@ -10,3 +11,2 @@
+ line10
+-del2
+ line11`)[0];
+      const deletions = getDeletions(diff);
+      expect(deletions).toHaveLength(2);
+      expect(deletions[0].content).toBe('del1');
+      expect(deletions[1].content).toBe('del2');
+    });
+  });
+
+  // hasSignificantChanges
+  describe('hasSignificantChanges', () => {
+    it('变更行数超过阈值返回 true', () => {
+      const diff = parseDiff(`diff --git a/file.ts b/file.ts
+index 111..222 100644
+--- a/file.ts
++++ b/file.ts
+@@ -1,5 +1,8 @@
+ line1
++add1
++add2
++add3
+ line2
+-del1
+-del2
+ line3`)[0];
+      expect(hasSignificantChanges(diff, 4)).toBe(true);
+    });
+
+    it('变更行数等于阈值返回 false', () => {
+      const diff = parseDiff(`diff --git a/file.ts b/file.ts
+index 111..222 100644
+--- a/file.ts
++++ b/file.ts
+@@ -1,3 +1,3 @@
+ line1
+-del
++add
+ line2`)[0];
+      expect(hasSignificantChanges(diff, 2)).toBe(false);
+    });
+
+    it('变更行数少于阈值返回 false', () => {
+      const diff = parseDiff(`diff --git a/file.ts b/file.ts
+index 111..222 100644
+--- a/file.ts
++++ b/file.ts
+@@ -1,2 +1,2 @@
+ line1
+-old
++new`)[0];
+      expect(hasSignificantChanges(diff, 10)).toBe(false);
+    });
+
+    it('默认阈值为 10', () => {
+      const lines: string[] = [
+        'diff --git a/file.ts b/file.ts',
+        'index 111..222 100644',
+        '--- a/file.ts',
+        '+++ b/file.ts',
+        '@@ -1,5 +1,5 @@',
+      ];
+      for (let i = 0; i < 5; i++) {
+        lines.push(`-old${i}`);
+        lines.push(`+new${i}`);
+      }
+      const diff = parseDiff(lines.join('\n'))[0];
+      expect(hasSignificantChanges(diff)).toBe(false);
+    });
+
+    it('空 hunks 返回 false', () => {
+      const diff: FileDiff = { path: 'empty.ts', status: 'modified', hunks: [] };
+      expect(hasSignificantChanges(diff)).toBe(false);
+    });
+
+    it('只有 context 行返回 false', () => {
+      const diff = parseDiff(`diff --git a/file.ts b/file.ts
+index 111..222 100644
+--- a/file.ts
++++ b/file.ts
+@@ -1,3 +1,3 @@
+ line1
+ line2
+ line3`)[0];
+      expect(hasSignificantChanges(diff, 0)).toBe(false);
+    });
+  });
+
+  // hunk 边界情况
+  describe('hunk 边界情况', () => {
+    it('hunk 只有 add 行（新增文件）', () => {
+      const diff = parseDiff(`diff --git a/new.ts b/new.ts
+new file mode 100644
+index 0000000..abc1234
+--- /dev/null
++++ b/new.ts
+@@ -0,0 +1,5 @@
++line1
++line2
++line3
++line4
++line5`)[0];
+      expect(diff.status).toBe('added');
+      expect(diff.hunks[0].oldStart).toBe(0);
+      expect(diff.hunks[0].oldCount).toBe(0);
+      expect(diff.hunks[0].newStart).toBe(1);
+      expect(diff.hunks[0].newCount).toBe(5);
+      expect(diff.hunks[0].lines).toHaveLength(5);
+      expect(diff.hunks[0].lines.every(l => l.type === 'add')).toBe(true);
+    });
+
+    it('hunk 只有 delete 行（删除文件）', () => {
+      const diff = parseDiff(`diff --git a/old.ts b/old.ts
+deleted file mode 100644
+index abc1234..0000000
+--- a/old.ts
++++ /dev/null
+@@ -1,5 +0,0 @@
+-line1
+-line2
+-line3
+-line4
+-line5`)[0];
+      expect(diff.status).toBe('deleted');
+      expect(diff.hunks[0].oldStart).toBe(1);
+      expect(diff.hunks[0].oldCount).toBe(5);
+      expect(diff.hunks[0].newStart).toBe(0);
+      expect(diff.hunks[0].newCount).toBe(0);
+      expect(diff.hunks[0].lines).toHaveLength(5);
+      expect(diff.hunks[0].lines.every(l => l.type === 'delete')).toBe(true);
+    });
+
+    it('hunk 只有 context 行', () => {
+      const diff = parseDiff(`diff --git a/file.ts b/file.ts
+index 111..222 100644
+--- a/file.ts
++++ b/file.ts
+@@ -1,3 +1,3 @@
+ line1
+ line2
+ line3`)[0];
+      expect(diff.hunks[0].lines).toHaveLength(3);
+      expect(diff.hunks[0].lines.every(l => l.type === 'context')).toBe(true);
+    });
+
+    it('单一行 hunk（省略计数）', () => {
+      const diff = parseDiff(`diff --git a/file.ts b/file.ts
+index 111..222 100644
+--- a/file.ts
++++ b/file.ts
+@@ -1 +1 @@
+-old
++new`)[0];
+      expect(diff.hunks[0].oldCount).toBe(1);
+      expect(diff.hunks[0].newCount).toBe(1);
+      expect(diff.hunks[0].lines).toHaveLength(2);
+    });
+
+    it('单行新增 hunk', () => {
+      const diff = parseDiff(`diff --git a/file.ts b/file.ts
+index 111..222 100644
+--- a/file.ts
++++ b/file.ts
+@@ -1 +1,2 @@
+ line1
++line2`)[0];
+      expect(diff.hunks[0].oldCount).toBe(1);
+      expect(diff.hunks[0].newCount).toBe(2);
+    });
+
+    it('单行删除 hunk', () => {
+      const diff = parseDiff(`diff --git a/file.ts b/file.ts
+index 111..222 100644
+--- a/file.ts
++++ b/file.ts
+@@ -1,2 +1 @@
+ line1
+-line2`)[0];
+      expect(diff.hunks[0].oldCount).toBe(2);
+      expect(diff.hunks[0].newCount).toBe(1);
+    });
+  });
+
+  // 行号计算边界情况
+  describe('行号计算边界情况', () => {
+    it('全新增文件的行号', () => {
+      const diff = parseDiff(`diff --git a/new.ts b/new.ts
+new file mode 100644
+index 0000000..abc1234
+--- /dev/null
++++ b/new.ts
+@@ -0,0 +1,3 @@
++line1
++line2
++line3`)[0];
+      const lines = diff.hunks[0].lines;
+      expect(lines[0].newLineNumber).toBe(1);
+      expect(lines[0].oldLineNumber).toBeUndefined();
+      expect(lines[1].newLineNumber).toBe(2);
+      expect(lines[2].newLineNumber).toBe(3);
+    });
+
+    it('全删除文件的行号', () => {
+      const diff = parseDiff(`diff --git a/old.ts b/old.ts
+deleted file mode 100644
+index abc1234..0000000
+--- a/old.ts
++++ /dev/null
+@@ -1,3 +0,0 @@
+-line1
+-line2
+-line3`)[0];
+      const lines = diff.hunks[0].lines;
+      expect(lines[0].oldLineNumber).toBe(1);
+      expect(lines[0].newLineNumber).toBeUndefined();
+      expect(lines[1].oldLineNumber).toBe(2);
+      expect(lines[2].oldLineNumber).toBe(3);
+    });
+  });
+
+  // parseDiffStat 边界情况
+  describe('parseDiffStat 边界情况', () => {
+    it('零变更行', () => {
+      const stat = ` file.ts | 0`;
+      const result = parseDiffStat(stat);
+      expect(result).toHaveLength(1);
+      expect(result[0].insertions).toBe(0);
+      expect(result[0].deletions).toBe(0);
+    });
+
+    it('只有新增', () => {
+      const stat = ` file.ts | 5 +++++`;
+      const result = parseDiffStat(stat);
+      expect(result).toHaveLength(1);
+      expect(result[0].insertions).toBe(5);
+      expect(result[0].deletions).toBe(0);
+    });
+
+    it('只有删除', () => {
+      const stat = ` file.ts | 3 ---`;
+      const result = parseDiffStat(stat);
+      expect(result).toHaveLength(1);
+      expect(result[0].insertions).toBe(0);
+      expect(result[0].deletions).toBe(3);
+    });
+  });
+
+  // filterDiffsByPath 边界情况
+  describe('filterDiffsByPath 边界情况', () => {
+    it('空数组返回空', () => {
+      expect(filterDiffsByPath([], '.*')).toHaveLength(0);
+    });
+
+    it('匹配所有返回全部', () => {
+      const diffs = parseDiff(`diff --git a/a.ts b/a.ts
+index 111..222 100644
+--- a/a.ts
++++ b/a.ts
+@@ -1 +1 @@
+-a
++b
+diff --git a/b.ts b/b.ts
+index 111..222 100644
+--- a/b.ts
++++ b/b.ts
+@@ -1 +1 @@
+-x
++y`);
+      expect(filterDiffsByPath(diffs, '.*')).toHaveLength(2);
+    });
+  });
+
+  // combined diff 跳过
+  describe('combined diff 跳过', () => {
+    it('正确跳过 diff --cc 格式', () => {
+      const diff = `diff --cc file.ts
+index 111,222..333
+--- a/file.ts
++++ b/file.ts
+@@@ -1,1 -1,1 +1,1 @@@
+ line
+diff --git a/normal.ts b/normal.ts
+index 111..222 100644
+--- a/normal.ts
++++ b/normal.ts
+@@ -1 +1 @@
+-old
++new`;
+      const files = parseDiff(diff);
+      expect(files).toHaveLength(1);
+      expect(files[0].path).toBe('normal.ts');
+    });
+
+    it('正确跳过 diff --combined 格式', () => {
+      const diff = `diff --combined file.ts
+index 111,222..333
+--- a/file.ts
++++ b/file.ts
+@@@ -1,1 -1,1 +1,1 @@@
+ line
+diff --git a/normal.ts b/normal.ts
+index 111..222 100644
+--- a/normal.ts
++++ b/normal.ts
+@@ -1 +1 @@
+-old
++new`;
+      const files = parseDiff(diff);
+      expect(files).toHaveLength(1);
+      expect(files[0].path).toBe('normal.ts');
+    });
+  });
+
+  // getHunkContext 边界情况
+  describe('getHunkContext 边界情况', () => {
+    it('contextLines 为 0 返回空数组', () => {
+      const diff = parseDiff(`diff --git a/file.ts b/file.ts
+index 111..222 100644
+--- a/file.ts
++++ b/file.ts
+@@ -1,3 +1,3 @@
+ ctx1
+- a
++ b
+ ctx2`)[0];
+      const ctx = getHunkContext(diff.hunks[0], 0);
+      expect(ctx).toHaveLength(0);
+    });
+
+    it('contextLines 大于实际 context 行数时返回所有', () => {
+      const diff = parseDiff(`diff --git a/file.ts b/file.ts
+index 111..222 100644
+--- a/file.ts
++++ b/file.ts
+@@ -1,3 +1,3 @@
+ ctx1
+- a
++ b
+ ctx2`)[0];
+      const ctx = getHunkContext(diff.hunks[0], 100);
+      expect(ctx).toHaveLength(2);
     });
   });
 });

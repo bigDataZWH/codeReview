@@ -89,19 +89,16 @@ export interface TracingManagerOptions {
 /** 生成随机 hex 字符串（默认 16 字符 = 32 hex 位） */
 function randomHex(length: number): string {
   const bytes = new Uint8Array(length);
-  // Node 18+ 内置 crypto.getRandomValues
   if (typeof globalThis !== 'undefined' && globalThis.crypto?.getRandomValues) {
     globalThis.crypto.getRandomValues(bytes);
   } else {
-    // 回退到 Math.random（不保证密码学安全，但用于 ID 生成足够）
     for (let i = 0; i < length; i++) {
       bytes[i] = Math.floor(Math.random() * 256);
     }
   }
   return Array.from(bytes)
     .map((b) => b.toString(16).padStart(2, '0'))
-    .join('')
-    .slice(0, length * 2);
+    .join('');
 }
 
 /** 默认 ID 生成器：使用 crypto 生成 16 字符 hex */
@@ -143,9 +140,13 @@ export class TracingManager {
 
   constructor(options: TracingManagerOptions = {}) {
     this.serviceName = options.serviceName ?? 'code-review';
-    this.maxSpans = options.maxSpans ?? 10000;
+    this.maxSpans = Math.max(1, options.maxSpans ?? 10000);
     this.idGenerator = options.idGenerator ?? defaultIdGenerator;
     this.nowFn = options.nowFn ?? (() => performance.now());
+  }
+
+  private resolveSpan(span: Span | string): Span | undefined {
+    return typeof span === 'string' ? this.spans.get(span) : span;
   }
 
   /** 当前 performance.now 值（便于测试注入） */
@@ -242,13 +243,11 @@ export class TracingManager {
    * @param error 可选错误信息（设置时将 status 置为 error）
    */
   endSpan(span: Span | string, error?: string | Error): void {
-    const spanId = typeof span === 'string' ? span : span.spanId;
-    const target = this.spans.get(spanId);
+    const target = this.resolveSpan(span);
     if (!target) {
       return;
     }
     if (target.status === 'completed' || target.status === 'error') {
-      // 已结束的 span 不重复处理
       return;
     }
 
@@ -261,7 +260,6 @@ export class TracingManager {
       target.status = 'completed';
     }
 
-    // 从活动栈中移除（仅移除最顶层匹配项，避免误删嵌套）
     const idx = this.activeStack.lastIndexOf(target);
     if (idx !== -1) {
       this.activeStack.splice(idx, 1);
@@ -270,7 +268,7 @@ export class TracingManager {
 
   /** 为 span 添加属性 */
   setAttribute(span: Span | string, key: string, value: unknown): void {
-    const target = typeof span === 'string' ? this.spans.get(span) : span;
+    const target = this.resolveSpan(span);
     if (!target) return;
     if (!target.attributes) {
       target.attributes = {};
@@ -278,9 +276,8 @@ export class TracingManager {
     target.attributes[key] = value;
   }
 
-  /** 为 span 添加事件 */
   addEvent(span: Span | string, name: string, attributes?: Record<string, unknown>): void {
-    const target = typeof span === 'string' ? this.spans.get(span) : span;
+    const target = this.resolveSpan(span);
     if (!target) return;
     if (!target.events) {
       target.events = [];
@@ -292,9 +289,8 @@ export class TracingManager {
     });
   }
 
-  /** 标记 span 为 error */
   setError(span: Span | string, error: string | Error): void {
-    const target = typeof span === 'string' ? this.spans.get(span) : span;
+    const target = this.resolveSpan(span);
     if (!target) return;
     target.error = error instanceof Error ? error.message : String(error);
     target.status = 'error';
@@ -345,10 +341,17 @@ export class TracingManager {
   /** 导出单个 trace */
   private exportSingleTrace(traceId: string, exportedAt: string): TraceExport {
     const spans = this.getSpansByTrace(traceId);
-    const startTimes = spans.map((s) => s.startTime);
-    const endTimes = spans.map((s) => s.endTime ?? s.startTime);
-    const minStart = startTimes.length > 0 ? Math.min(...startTimes) : 0;
-    const maxEnd = endTimes.length > 0 ? Math.max(...endTimes) : 0;
+    let minStart = Infinity;
+    let maxEnd = -Infinity;
+    for (const span of spans) {
+      if (span.startTime < minStart) minStart = span.startTime;
+      const end = span.endTime ?? span.startTime;
+      if (end > maxEnd) maxEnd = end;
+    }
+    if (spans.length === 0) {
+      minStart = 0;
+      maxEnd = 0;
+    }
 
     return {
       traceId,
@@ -366,7 +369,6 @@ export class TracingManager {
     this.activeStack.length = 0;
   }
 
-  /** 当 span 数超过上限时丢弃最旧的 span */
   private evictOldestSpan(): void {
     let oldestSpan: Span | undefined;
     let oldestId: string | undefined;
@@ -378,6 +380,10 @@ export class TracingManager {
     }
     if (oldestId && oldestSpan) {
       this.spans.delete(oldestId);
+      const stackIdx = this.activeStack.indexOf(oldestSpan);
+      if (stackIdx !== -1) {
+        this.activeStack.splice(stackIdx, 1);
+      }
       const traceSpans = this.traceIndex.get(oldestSpan.traceId);
       if (traceSpans) {
         const filtered = traceSpans.filter((id) => id !== oldestId);

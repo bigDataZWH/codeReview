@@ -1,4 +1,4 @@
-import type { Finding, FileDiff, FalsePositiveRule, ExistingComment } from './types.js';
+import type { Finding, FileDiff, FalsePositiveRule, ExistingComment, Hunk } from './types.js';
 
 // ==================== 辅助函数 ====================
 
@@ -18,23 +18,88 @@ function isTestFile(filePath: string): boolean {
 /** 判断文件是否为生成文件 */
 function isGeneratedFile(filePath: string): boolean {
   const name = filePath.split('/').pop() ?? filePath;
-  // 路径中包含 generated 或文件名匹配常见生成文件模式
   const pathLower = filePath.toLowerCase();
   if (pathLower.includes('/generated/') || pathLower.includes('/gen/')) return true;
-  // 常见生成文件扩展名
   return /\.(pb\.go|pb\.rs|generated\.\w+|\.g\.ts|\.generated\.\w+)$/i.test(name);
+}
+
+/** 将文本分词为词数组（小写，过滤单字符） */
+function tokenizeToArray(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fff]+/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length > 1);
 }
 
 /** 将文本分词为小写关键词集合 */
 function tokenize(text: string): Set<string> {
-  return new Set(
-    text
-      .toLowerCase()
-      .replace(/[^a-z0-9\u4e00-\u9fff]+/g, ' ')
-      .split(/\s+/)
-      .filter((w) => w.length > 1),
-  );
+  return new Set(tokenizeToArray(text));
 }
+
+/** 检查消息是否包含任一关键词（不区分大小写） */
+function messageContainsAny(message: string, keywords: string[]): boolean {
+  const msg = message.toLowerCase();
+  return keywords.some((k) => msg.includes(k));
+}
+
+// ==================== 低价值发现模式定义 ====================
+
+const LOW_VALUE_PATTERNS: { id: string; keywords: string[] }[] = [
+  {
+    id: 'jsdoc-comment',
+    keywords: [
+      'jsdoc',
+      '添加注释',
+      '添加文档',
+      'add comments',
+      'add a comment',
+      'consider adding comments',
+      'missing comments',
+      'document this',
+    ],
+  },
+  {
+    id: 'naming-style',
+    keywords: [
+      'naming convention',
+      'naming style',
+      'camelcase',
+      'pascalcase',
+      'snake_case',
+      'variable name should',
+      'name should be more descriptive',
+      'function name should',
+      'should follow naming',
+    ],
+  },
+  {
+    id: 'import-sort',
+    keywords: [
+      'imports should be sorted',
+      'import order',
+      'import sort',
+      'sort imports',
+      'imports are not sorted',
+      'import statements should',
+    ],
+  },
+  {
+    id: 'code-formatting',
+    keywords: [
+      'use single quotes',
+      'use double quotes',
+      'missing semicolon',
+      'missing comma',
+      'trailing comma',
+      'indentation',
+      'prettier',
+      'eslint',
+      'expected indentation',
+      'line is too long',
+    ],
+  },
+];
 
 // ==================== correctLineLocations ====================
 
@@ -47,7 +112,6 @@ function tokenize(text: string): Set<string> {
 export function correctLineLocations(findings: Finding[], diffs: FileDiff[]): Finding[] {
   if (findings.length === 0) return [];
 
-  // 按 path 索引 diffs
   const diffMap = new Map<string, FileDiff>();
   for (const d of diffs) {
     diffMap.set(d.path, d);
@@ -59,20 +123,17 @@ export function correctLineLocations(findings: Finding[], diffs: FileDiff[]): Fi
       return finding;
     }
 
-    // 找到该 finding 对应的 hunk（行号落在 hunk 范围内）
     let matchedHunk = diff.hunks.find((hunk) => {
       const hunkEnd = hunk.newStart + hunk.newCount - 1;
       return finding.line >= hunk.newStart && finding.line <= hunkEnd;
     });
 
-    // 如果没找到精确匹配的 hunk，尝试基于内容匹配
     if (!matchedHunk) {
       matchedHunk = findHunkByContent(finding, diff.hunks);
     }
 
-    // 如果还是没找到，找最近的 hunk
     if (!matchedHunk) {
-      matchedHunk = diff.hunks.reduce<{ hunk: (typeof diff.hunks)[0]; dist: number } | null>(
+      matchedHunk = diff.hunks.reduce<{ hunk: Hunk; dist: number } | null>(
         (best, hunk) => {
           const hunkEnd = hunk.newStart + hunk.newCount - 1;
           const dist = finding.line < hunk.newStart
@@ -96,7 +157,6 @@ export function correctLineLocations(findings: Finding[], diffs: FileDiff[]): Fi
 
     const result: Finding = { ...finding, line: clampedLine };
 
-    // Also clamp endLine if present
     if (result.endLine !== undefined) {
       result.endLine = Math.max(matchedHunk.newStart, Math.min(result.endLine, hunkEnd));
     }
@@ -108,15 +168,13 @@ export function correctLineLocations(findings: Finding[], diffs: FileDiff[]): Fi
 /**
  * 基于内容匹配查找 hunk：在 finding.message 中搜索代码片段。
  */
-function findHunkByContent(finding: Finding, hunks: import('./types.js').Hunk[]): import('./types.js').Hunk | undefined {
-  // Extract potential code snippets from message (quoted text)
+function findHunkByContent(finding: Finding, hunks: Hunk[]): Hunk | undefined {
   const codeSnippetMatch = finding.message.match(/`([^`]+)`/);
   if (!codeSnippetMatch) return undefined;
 
   const snippet = codeSnippetMatch[1].trim();
   if (!snippet || snippet.length < 3) return undefined;
 
-  // Search in hunks for a line containing this snippet
   for (const hunk of hunks) {
     for (const line of hunk.lines) {
       if (line.type === 'add' || line.type === 'delete') {
@@ -134,9 +192,27 @@ function findHunkByContent(finding: Finding, hunks: import('./types.js').Hunk[])
 /** 高置信度阈值：超过此值的 finding 不被误报规则过滤 */
 const HIGH_CONFIDENCE_THRESHOLD = 0.85;
 
+/**
+ * 判断 finding 是否属于低价值发现（无视置信度）。
+ *
+ * 低价值发现包括：JSDoc/注释建议、命名风格建议、import 排序建议、代码格式化建议、TODO/FIXME 注释。
+ */
+function isLowValueFinding(f: Finding): boolean {
+  if (f.severity !== 'low') return false;
+  const msg = f.message.toLowerCase();
+  for (const pattern of LOW_VALUE_PATTERNS) {
+    if (pattern.keywords.some((k) => msg.includes(k))) {
+      return true;
+    }
+  }
+  if (msg.includes('todo') || msg.includes('fixme')) {
+    return true;
+  }
+  return false;
+}
+
 /** 内置误报规则 */
 export const BUILTIN_FP_RULES: FalsePositiveRule[] = [
-  // 非 C/C++ 文件中的内存安全问题
   {
     id: 'builtin-memory-safety-non-c',
     name: '非 C/C++ 文件内存安全问题',
@@ -145,37 +221,25 @@ export const BUILTIN_FP_RULES: FalsePositiveRule[] = [
       !isCFile(f.file) &&
       f.confidence < HIGH_CONFIDENCE_THRESHOLD,
   },
-  // 速率限制 / DOS
   {
     id: 'builtin-rate-limit',
     name: '速率限制/DOS 类建议',
-    match: (f) => {
-      const msg = f.message.toLowerCase();
-      return (
-        (msg.includes('rate limit') || msg.includes('rate-limit') || msg.includes('dos')) &&
-        f.confidence < HIGH_CONFIDENCE_THRESHOLD
-      );
-    },
+    match: (f) =>
+      messageContainsAny(f.message, ['rate limit', 'rate-limit', 'dos']) &&
+      f.confidence < HIGH_CONFIDENCE_THRESHOLD,
   },
-  // 开放重定向
   {
     id: 'builtin-open-redirect',
     name: '开放重定向建议',
-    match: (f) => {
-      const msg = f.message.toLowerCase();
-      return (
-        msg.includes('open redirect') &&
-        f.confidence < HIGH_CONFIDENCE_THRESHOLD
-      );
-    },
+    match: (f) =>
+      f.message.toLowerCase().includes('open redirect') &&
+      f.confidence < HIGH_CONFIDENCE_THRESHOLD,
   },
-  // @generated 文件中的 finding
   {
     id: 'builtin-generated-file',
     name: '生成文件中的发现',
     match: (f) => isGeneratedFile(f.file) && f.confidence < HIGH_CONFIDENCE_THRESHOLD,
   },
-  // 测试文件中的 low 级安全 finding
   {
     id: 'builtin-test-low-security',
     name: '测试文件中的低优先级安全发现',
@@ -185,220 +249,114 @@ export const BUILTIN_FP_RULES: FalsePositiveRule[] = [
       f.category === 'security' &&
       f.confidence < HIGH_CONFIDENCE_THRESHOLD,
   },
-  // TODO/FIXME 注释
   {
     id: 'builtin-todo-fixme',
     name: 'TODO/FIXME 注释',
-    match: (f) => {
-      const msg = f.message.toLowerCase();
-      return (
-        (msg.includes('todo') || msg.includes('fixme')) &&
-        f.confidence < HIGH_CONFIDENCE_THRESHOLD
-      );
-    },
+    match: (f) =>
+      messageContainsAny(f.message, ['todo', 'fixme']) &&
+      f.confidence < HIGH_CONFIDENCE_THRESHOLD,
   },
-  // 日志级别建议
   {
     id: 'builtin-log-level',
     name: '日志级别建议',
-    match: (f) => {
-      const msg = f.message.toLowerCase();
-      return (
-        (msg.includes('log level') || msg.includes('log level') || msg.includes('logging')) &&
-        f.severity === 'low' &&
-        f.confidence < HIGH_CONFIDENCE_THRESHOLD
-      );
-    },
+    match: (f) =>
+      messageContainsAny(f.message, ['log level', 'logging']) &&
+      f.severity === 'low' &&
+      f.confidence < HIGH_CONFIDENCE_THRESHOLD,
   },
-  // console.log 相关的 low 级别 finding
   {
     id: 'builtin-console-log-low',
     name: 'console.log 相关低级别发现',
-    match: (f) => {
-      const msg = f.message.toLowerCase();
-      return (
-        msg.includes('console.log') &&
-        f.severity === 'low' &&
-        f.confidence < HIGH_CONFIDENCE_THRESHOLD
-      );
-    },
+    match: (f) =>
+      f.message.toLowerCase().includes('console.log') &&
+      f.severity === 'low' &&
+      f.confidence < HIGH_CONFIDENCE_THRESHOLD,
   },
-  // 迭代 7 新增：JSDoc/注释建议类低价值发现
-  {
-    id: 'builtin-jsdoc-comment-suggestion',
-    name: 'JSDoc/注释添加建议',
-    match: (f) => {
-      const msg = f.message.toLowerCase();
-      return (
-        f.severity === 'low' &&
-        f.confidence < HIGH_CONFIDENCE_THRESHOLD &&
-        (
-          msg.includes('jsdoc') ||
-          msg.includes('添加注释') ||
-          msg.includes('添加文档') ||
-          msg.includes('add comments') ||
-          msg.includes('add a comment') ||
-          msg.includes('consider adding comments') ||
-          msg.includes('missing comments') ||
-          msg.includes('document this')
-        )
-      );
-    },
-  },
-  // 迭代 7 新增：命名风格建议类低价值发现
-  {
-    id: 'builtin-naming-style-suggestion',
-    name: '命名风格建议',
-    match: (f) => {
-      const msg = f.message.toLowerCase();
-      return (
-        f.severity === 'low' &&
-        f.confidence < HIGH_CONFIDENCE_THRESHOLD &&
-        (
-          msg.includes('naming convention') ||
-          msg.includes('naming style') ||
-          msg.includes('camelcase') ||
-          msg.includes('pascalcase') ||
-          msg.includes('snake_case') ||
-          msg.includes('variable name should') ||
-          msg.includes('name should be more descriptive') ||
-          msg.includes('function name should') ||
-          msg.includes('should follow naming')
-        )
-      );
-    },
-  },
-  // 迭代 7 新增：import 排序建议类低价值发现
-  {
-    id: 'builtin-import-sort-suggestion',
-    name: 'import 排序建议',
-    match: (f) => {
-      const msg = f.message.toLowerCase();
-      return (
-        f.severity === 'low' &&
-        f.confidence < HIGH_CONFIDENCE_THRESHOLD &&
-        (
-          msg.includes('imports should be sorted') ||
-          msg.includes('import order') ||
-          msg.includes('import sort') ||
-          msg.includes('sort imports') ||
-          msg.includes('imports are not sorted') ||
-          msg.includes('import statements should')
-        )
-      );
-    },
-  },
-  // 迭代 7 新增：代码格式化建议类低价值发现（prettier/eslint 风格）
-  {
-    id: 'builtin-code-formatting-suggestion',
-    name: '代码格式化建议（prettier/eslint 风格）',
-    match: (f) => {
-      const msg = f.message.toLowerCase();
-      return (
-        f.severity === 'low' &&
-        f.confidence < HIGH_CONFIDENCE_THRESHOLD &&
-        (
-          msg.includes('use single quotes') ||
-          msg.includes('use double quotes') ||
-          msg.includes('missing semicolon') ||
-          msg.includes('missing comma') ||
-          msg.includes('trailing comma') ||
-          msg.includes('indentation') ||
-          msg.includes('prettier') ||
-          msg.includes('eslint') ||
-          msg.includes('expected indentation') ||
-          msg.includes('line is too long')
-        )
-      );
-    },
-  },
-  // Task 17 新增：错误处理建议类低价值发现（"should add error handling" / "consider try-catch"）
+  ...LOW_VALUE_PATTERNS.map<FalsePositiveRule>((pattern) => ({
+    id: `builtin-${pattern.id}-suggestion`,
+    name: `${pattern.id} 建议类低价值发现`,
+    match: (f) =>
+      f.severity === 'low' &&
+      f.confidence < HIGH_CONFIDENCE_THRESHOLD &&
+      messageContainsAny(f.message, pattern.keywords),
+  })),
   {
     id: 'builtin-error-handling-suggestion',
     name: '错误处理建议类低价值发现',
     match: (f) => {
       if (f.confidence >= HIGH_CONFIDENCE_THRESHOLD) return false;
       if (f.severity !== 'low' && f.severity !== 'medium') return false;
-      const msg = f.message.toLowerCase();
-      return (
-        msg.includes('error handling') ||
-        msg.includes('exception handling') ||
-        msg.includes('add error handling') ||
-        msg.includes('add exception handling') ||
-        msg.includes('try-catch') ||
-        msg.includes('try catch') ||
-        msg.includes('consider try-catch') ||
-        msg.includes('use try-catch')
-      );
+      return messageContainsAny(f.message, [
+        'error handling',
+        'exception handling',
+        'add error handling',
+        'add exception handling',
+        'try-catch',
+        'try catch',
+        'consider try-catch',
+        'use try-catch',
+      ]);
     },
   },
-  // Task 17 新增：空 catch 块建议类低价值发现（"empty catch block" / "catch block is empty"）
   {
     id: 'builtin-empty-catch',
     name: '空 catch 块建议类低价值发现',
     match: (f) => {
       if (f.confidence >= HIGH_CONFIDENCE_THRESHOLD) return false;
       if (f.severity !== 'low' && f.severity !== 'medium') return false;
-      const msg = f.message.toLowerCase();
-      return (
-        msg.includes('empty catch') ||
-        msg.includes('catch block is empty') ||
-        msg.includes('catch is empty') ||
-        msg.includes('empty catch block')
-      );
+      return messageContainsAny(f.message, [
+        'empty catch',
+        'catch block is empty',
+        'catch is empty',
+        'empty catch block',
+      ]);
     },
   },
-  // Task 17 新增：可空引用建议类低价值发现（"potential null reference" / "may be null"）
   {
     id: 'builtin-null-reference',
     name: '可空引用建议类低价值发现',
     match: (f) => {
       if (f.confidence >= HIGH_CONFIDENCE_THRESHOLD) return false;
       if (f.severity !== 'low' && f.severity !== 'medium') return false;
-      const msg = f.message.toLowerCase();
-      return (
-        msg.includes('null reference') ||
-        msg.includes('potential null') ||
-        msg.includes('possible null') ||
-        msg.includes('may be null') ||
-        msg.includes('might be null') ||
-        msg.includes('could be null')
-      );
+      return messageContainsAny(f.message, [
+        'null reference',
+        'potential null',
+        'possible null',
+        'may be null',
+        'might be null',
+        'could be null',
+      ]);
     },
   },
-  // Task 17 新增：未使用变量建议类低价值发现（"unused variable" / "variable is never used"）
   {
     id: 'builtin-unused-variable',
     name: '未使用变量建议类低价值发现',
     match: (f) => {
       if (f.confidence >= HIGH_CONFIDENCE_THRESHOLD) return false;
       if (f.severity !== 'low' && f.severity !== 'medium') return false;
-      const msg = f.message.toLowerCase();
-      return (
-        msg.includes('unused variable') ||
-        msg.includes('variable is never used') ||
-        msg.includes('is never used') ||
-        msg.includes('never used')
-      );
+      return messageContainsAny(f.message, [
+        'unused variable',
+        'variable is never used',
+        'is never used',
+        'never used',
+      ]);
     },
   },
-  // Task 17 新增：过长函数建议类低价值发现（"function too long" / "consider splitting"）
   {
     id: 'builtin-long-function',
     name: '过长函数建议类低价值发现',
     match: (f) => {
       if (f.confidence >= HIGH_CONFIDENCE_THRESHOLD) return false;
       if (f.severity !== 'low' && f.severity !== 'medium') return false;
-      const msg = f.message.toLowerCase();
-      return (
-        msg.includes('function too long') ||
-        msg.includes('function is too long') ||
-        msg.includes('method too long') ||
-        msg.includes('method is too long') ||
-        msg.includes('consider splitting') ||
-        msg.includes('split this function') ||
-        msg.includes('split this method')
-      );
+      return messageContainsAny(f.message, [
+        'function too long',
+        'function is too long',
+        'method too long',
+        'method is too long',
+        'consider splitting',
+        'split this function',
+        'split this method',
+      ]);
     },
   },
 ];
@@ -433,9 +391,7 @@ export function filterFalsePositives(
  * 仅对同文件同行的 finding 和 comment 进行比较。
  */
 function computeIoU(finding: Finding, comment: ExistingComment): number {
-  // 不同文件不去重
   if (finding.file !== comment.file) return 0;
-  // 不同行不去重
   if (finding.line !== comment.line) return 0;
 
   const tokensA = tokenize(finding.message);
@@ -454,20 +410,6 @@ function computeIoU(finding: Finding, comment: ExistingComment): number {
   if (union === 0) return 0;
 
   return intersection / union;
-}
-
-/**
- * 将文本切分为词数组（保留顺序，用于 LCS 计算）。
- * 与返回 Set 的 tokenize 不同，此函数保留词序与重复词，
- * 但复用相同的字符过滤规则与长度阈值（length > 1），
- * 确保 LCS 与 IoU 对"词"的定义一致。
- */
-function tokenizeForLcs(text: string): string[] {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9\u4e00-\u9fff]+/g, ' ')
-    .split(/\s+/)
-    .filter((w) => w.length > 1);
 }
 
 /**
@@ -498,15 +440,13 @@ function longestCommonSubsequence<T>(a: T[], b: T[]): number {
  * 返回 0-1 之间的值，1 表示完全相同，0 表示完全不同。
  *
  * 算法：按词切分后计算 LCS 长度，相似度 = 2 * LCS / (lenA + lenB)。
- * 相比旧的"子串包含 + IoU 回退"实现，能正确识别词序重排的部分重叠
- * （如 "hello world" vs "world hello" 返回 0.5）。
  */
 export function computeTextOverlap(a: string, b: string): number {
   if (!a || !b) return 0;
   if (a === b) return 1;
 
-  const tokensA = tokenizeForLcs(a);
-  const tokensB = tokenizeForLcs(b);
+  const tokensA = tokenizeToArray(a);
+  const tokensB = tokenizeToArray(b);
 
   if (tokensA.length === 0 || tokensB.length === 0) return 0;
 
@@ -528,18 +468,27 @@ export function deduplicateFindings(
 ): Finding[] {
   if (existingComments.length === 0) return newFindings;
 
+  const commentMap = new Map<string, ExistingComment[]>();
+  for (const comment of existingComments) {
+    const key = `${comment.file}:${comment.line}`;
+    const list = commentMap.get(key);
+    if (list) {
+      list.push(comment);
+    } else {
+      commentMap.set(key, [comment]);
+    }
+  }
+
   return newFindings.filter((finding) => {
-    for (const comment of existingComments) {
-      // 不同文件 / 不同行直接跳过（保留原 computeTextOverlap 的守卫语义，
-      // 避免新 LCS 实现跨位置误去重）
-      if (finding.file !== comment.file || finding.line !== comment.line) {
-        continue;
-      }
+    const key = `${finding.file}:${finding.line}`;
+    const comments = commentMap.get(key);
+    if (!comments) return true;
+
+    for (const comment of comments) {
       const iou = computeIoU(finding, comment);
       const textOverlap = computeTextOverlap(finding.message, comment.body);
-      // Either keyword IoU or text overlap exceeds threshold
       if (iou > iouThreshold || textOverlap > iouThreshold) {
-        return false; // 重复，跳过
+        return false;
       }
     }
     return true;
@@ -625,7 +574,7 @@ export function filterByConfidence(findings: Finding[], minConfidence: number): 
   return findings.filter((f) => f.confidence >= minConfidence);
 }
 
-// ==================== countBySeverity (Round 48) ====================
+// ==================== countBySeverity ====================
 
 /**
  * 统计各严重级别的 finding 数量。
@@ -638,7 +587,7 @@ export function countBySeverity(findings: Finding[]): Record<string, number> {
   return counts;
 }
 
-// ==================== createCachedFilter (Round 53) ====================
+// ==================== createCachedFilter ====================
 
 /**
  * 创建基于已知误报缓存的 FalsePositiveRule 工厂函数。
@@ -646,13 +595,13 @@ export function countBySeverity(findings: Finding[]): Record<string, number> {
  */
 export function createCachedFilter(cache: Set<string>): FalsePositiveRule {
   return {
-    id: 'cached-fached-filter',
+    id: 'cached-false-positive-filter',
     name: '已知误报缓存',
     match: (f) => cache.has(`${f.file}:${f.line}:${f.category}`),
   };
 }
 
-// ==================== mergeFindings (Round 59) ====================
+// ==================== mergeFindings ====================
 
 /**
  * 合并多次审查结果的 findings，基于 file+line+category 去重。
@@ -674,7 +623,7 @@ export function mergeFindings(existing: Finding[], incoming: Finding[]): Finding
   return merged;
 }
 
-// ==================== getUniqueCategories (Round 64) ====================
+// ==================== getUniqueCategories ====================
 
 /**
  * 获取 findings 中所有唯一类别，按出现频率降序排列。
@@ -689,7 +638,7 @@ export function getUniqueCategories(findings: Finding[]): string[] {
     .map(([cat]) => cat);
 }
 
-// ==================== truncateFindings (Round 69) ====================
+// ==================== truncateFindings ====================
 
 /** truncateFindings 截断后添加的省略提示 */
 export const TRUNCATION_MESSAGE = '... and {count} more findings truncated';
@@ -713,7 +662,7 @@ export function truncateFindings(findings: Finding[], maxCount: number): Finding
   return truncated;
 }
 
-// ==================== 迭代 7：severity-based filtering ====================
+// ==================== severity-based filtering ====================
 
 /** severity-based filter 默认最低保留级别（过滤 info） */
 const DEFAULT_MIN_SEVERITY = 'low';
@@ -735,13 +684,12 @@ export function createSeverityBasedFilter(minSeverity: string = DEFAULT_MIN_SEVE
     name: `severity-based filter (min: ${minSeverity})`,
     match: (f) => {
       const level = SEVERITY_ORDER[f.severity] ?? 0;
-      // 严重级别低于 minSeverity 的 finding 被过滤
       return level < minLevel;
     },
   };
 }
 
-// ==================== 迭代 7：可配置的过滤策略 ====================
+// ==================== 可配置的过滤策略 ====================
 
 /**
  * 可配置的过滤策略。
@@ -764,76 +712,6 @@ export interface FilterStrategy {
 }
 
 /**
- * 判断 finding 是否属于低价值发现（无视置信度）。
- *
- * 低价值发现包括：JSDoc/注释建议、命名风格建议、import 排序建议、代码格式化建议。
- * 与 BUILTIN_FP_RULES 不同，此函数不检查 confidence，用于 stripLowValueFindings 策略。
- */
-function isLowValueFinding(f: Finding): boolean {
-  // 仅对 low 级别 finding 生效，避免误过滤高严重度真实问题
-  if (f.severity !== 'low') return false;
-  const msg = f.message.toLowerCase();
-  // JSDoc/注释建议
-  if (
-    msg.includes('jsdoc') ||
-    msg.includes('添加注释') ||
-    msg.includes('添加文档') ||
-    msg.includes('add comments') ||
-    msg.includes('add a comment') ||
-    msg.includes('consider adding comments') ||
-    msg.includes('missing comments') ||
-    msg.includes('document this')
-  ) {
-    return true;
-  }
-  // 命名风格建议
-  if (
-    msg.includes('naming convention') ||
-    msg.includes('naming style') ||
-    msg.includes('camelcase') ||
-    msg.includes('pascalcase') ||
-    msg.includes('snake_case') ||
-    msg.includes('variable name should') ||
-    msg.includes('name should be more descriptive') ||
-    msg.includes('function name should') ||
-    msg.includes('should follow naming')
-  ) {
-    return true;
-  }
-  // import 排序建议
-  if (
-    msg.includes('imports should be sorted') ||
-    msg.includes('import order') ||
-    msg.includes('import sort') ||
-    msg.includes('sort imports') ||
-    msg.includes('imports are not sorted') ||
-    msg.includes('import statements should')
-  ) {
-    return true;
-  }
-  // 代码格式化建议（prettier/eslint 风格）
-  if (
-    msg.includes('use single quotes') ||
-    msg.includes('use double quotes') ||
-    msg.includes('missing semicolon') ||
-    msg.includes('missing comma') ||
-    msg.includes('trailing comma') ||
-    msg.includes('indentation') ||
-    msg.includes('prettier') ||
-    msg.includes('eslint') ||
-    msg.includes('expected indentation') ||
-    msg.includes('line is too long')
-  ) {
-    return true;
-  }
-  // TODO/FIXME 注释也属于低价值（与 BUILTIN_FP_RULES 重叠，但无视置信度）
-  if (msg.includes('todo') || msg.includes('fixme')) {
-    return true;
-  }
-  return false;
-}
-
-/**
  * 按可配置策略过滤 findings。
  *
  * 过滤顺序：
@@ -849,23 +727,19 @@ function isLowValueFinding(f: Finding): boolean {
 export function filterWithStrategy(findings: Finding[], strategy: FilterStrategy): Finding[] {
   let result = findings;
 
-  // 步骤 1：过滤 info 级别
   if (strategy.stripInfoSeverity) {
     result = result.filter((f) => f.severity !== 'info');
   }
 
-  // 步骤 2：过滤低置信度
   if (strategy.minConfidence !== undefined) {
     const min = strategy.minConfidence;
     result = result.filter((f) => f.confidence >= min);
   }
 
-  // 步骤 3：过滤低价值发现（无视置信度，仅看 severity + 消息模式）
   if (strategy.stripLowValueFindings) {
     result = result.filter((f) => !isLowValueFinding(f));
   }
 
-  // 步骤 4：应用自定义规则（仅 customRules，不叠加 BUILTIN_FP_RULES）
   if (strategy.customRules && strategy.customRules.length > 0) {
     const rules = strategy.customRules;
     result = result.filter((finding) => {

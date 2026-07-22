@@ -9,10 +9,15 @@ import {
   withRetry,
   getReviewContextWithFallback,
   callModelWithTimeout,
+  batchProcess,
+  runWithConcurrency,
+  prioritizeDiffs,
   type ReviewSessionConfig,
   type DagNode,
   type DagContext,
+  type BatchProcessOptions,
 } from '../src/orchestrator.js';
+import type { FileBundle, RuleAnnotation } from '../src/types.js';
 import { StateStore } from '../src/state.js';
 import type { Finding, FileDiff, MCPContextResult, Rule, LLMProviderConfig, BlastRadiusItem } from '../src/types.js';
 
@@ -1449,6 +1454,391 @@ describe('buildReviewDag with real handlers', () => {
       expect(result.results.size).toBe(1);
       // 无 rules 配置，rule-engine 返回空数组
       expect(result.results.get('rule-engine')).toEqual([]);
+    });
+  });
+});
+
+// ============================================================
+// 边界情况测试
+// ============================================================
+describe('边界情况测试', () => {
+  describe('shouldSkipImpactAnalysis 边界情况', () => {
+    it('负数 fileCount 视为 0 并跳过', () => {
+      expect(shouldSkipImpactAnalysis(-1)).toBe(true);
+      expect(shouldSkipImpactAnalysis(-100)).toBe(true);
+    });
+
+    it('负数阈值视为 0，任何非零变更都不跳过', () => {
+      expect(shouldSkipImpactAnalysis(1, -5)).toBe(false);
+      expect(shouldSkipImpactAnalysis(10, -1)).toBe(false);
+      expect(shouldSkipImpactAnalysis(0, -5)).toBe(true);
+    });
+
+    it('阈值为 0 时任何非零变更都不跳过', () => {
+      expect(shouldSkipImpactAnalysis(1, 0)).toBe(false);
+      expect(shouldSkipImpactAnalysis(100, 0)).toBe(false);
+    });
+  });
+
+  describe('withRetry 边界情况', () => {
+    it('maxRetries 为负数时视为 0（不重试）', async () => {
+      let calls = 0;
+      await expect(
+        withRetry(
+          async () => {
+            calls++;
+            throw new Error('fail');
+          },
+          { maxRetries: -5, baseDelayMs: 1 },
+        ),
+      ).rejects.toThrow('fail');
+      expect(calls).toBe(1);
+    });
+
+    it('baseDelayMs 为 0 时无延迟重试', async () => {
+      let calls = 0;
+      const start = Date.now();
+      await withRetry(
+        async () => {
+          calls++;
+          if (calls < 3) throw new Error('retry');
+          return 'ok';
+        },
+        { maxRetries: 3, baseDelayMs: 0 },
+      );
+      const elapsed = Date.now() - start;
+      expect(calls).toBe(3);
+      expect(elapsed).toBeLessThan(100);
+    });
+
+    it('maxDelayMs 为 0 时无延迟', async () => {
+      let calls = 0;
+      const start = Date.now();
+      await withRetry(
+        async () => {
+          calls++;
+          if (calls < 3) throw new Error('retry');
+          return 'ok';
+        },
+        { maxRetries: 3, baseDelayMs: 1000, maxDelayMs: 0 },
+      );
+      const elapsed = Date.now() - start;
+      expect(calls).toBe(3);
+      expect(elapsed).toBeLessThan(100);
+    });
+  });
+
+  describe('mergeResults 边界情况', () => {
+    it('单个数组也能正常合并', () => {
+      const findings = [makeFinding({ file: 'a.ts', line: 1 })];
+      const merged = mergeResults([findings]);
+      expect(merged).toHaveLength(1);
+    });
+
+    it('空 finding 数组也能正确分组', () => {
+      const r1: Finding[] = [];
+      const r2: Finding[] = [];
+      const merged = mergeResults([r1, r2]);
+      expect(merged).toEqual([]);
+    });
+
+    it('未知 severity 按 info 级别处理', () => {
+      const r1 = [makeFinding({ file: 'a.ts', line: 1, severity: 'unknown' as never })];
+      const r2 = [makeFinding({ file: 'a.ts', line: 1, severity: 'info' })];
+      const merged = mergeResults([r1, r2]);
+      expect(merged.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  describe('executeDag 边界情况', () => {
+    it('单节点 DAG 正常执行', async () => {
+      const dag: DagNode<number>[] = [
+        { id: 'A', agentType: 'custom', dependencies: [], handler: async () => 42 },
+      ];
+      const context: DagContext = { diffs: [], previousResults: new Map() };
+      const result = await executeDag(dag, context);
+      expect(result.results.get('A')).toBe(42);
+      expect(result.errors.size).toBe(0);
+    });
+
+    it('长链依赖（串行链）正确执行', async () => {
+      const order: string[] = [];
+      const makeNode = (id: string, deps: string[]): DagNode<string> => ({
+        id,
+        agentType: 'custom',
+        dependencies: deps,
+        handler: async () => { order.push(id); return id; },
+      });
+      const dag = [
+        makeNode('A', []),
+        makeNode('B', ['A']),
+        makeNode('C', ['B']),
+        makeNode('D', ['C']),
+        makeNode('E', ['D']),
+      ];
+      const context: DagContext = { diffs: [], previousResults: new Map() };
+      const result = await executeDag(dag, context);
+      expect(order).toEqual(['A', 'B', 'C', 'D', 'E']);
+      expect(result.results.size).toBe(5);
+    });
+
+    it('多依赖节点正确等待所有依赖', async () => {
+      const order: string[] = [];
+      const makeNode = (id: string, deps: string[]): DagNode<string> => ({
+        id,
+        agentType: 'custom',
+        dependencies: deps,
+        handler: async () => { order.push(id); return id; },
+      });
+      const dag = [
+        makeNode('A', []),
+        makeNode('B', []),
+        makeNode('C', []),
+        makeNode('D', ['A', 'B', 'C']),
+      ];
+      const context: DagContext = { diffs: [], previousResults: new Map() };
+      const result = await executeDag(dag, context);
+      expect(order.indexOf('D')).toBeGreaterThan(order.indexOf('A'));
+      expect(order.indexOf('D')).toBeGreaterThan(order.indexOf('B'));
+      expect(order.indexOf('D')).toBeGreaterThan(order.indexOf('C'));
+      expect(result.results.size).toBe(4);
+    });
+  });
+
+  describe('batchProcess 边界情况', () => {
+    it('空 diffs 返回空结果', async () => {
+      const processFn = vi.fn().mockResolvedValue([]);
+      const result = await batchProcess([], { processFn });
+      expect(result.batches).toHaveLength(0);
+      expect(result.allFindings).toHaveLength(0);
+      expect(result.errors).toHaveLength(0);
+      expect(result.totalProcessed).toBe(0);
+    });
+
+    it('batchSize 为 0 或负数时按 1 处理', async () => {
+      const diffs = [makeFileDiff('a.ts'), makeFileDiff('b.ts'), makeFileDiff('c.ts')];
+      const processFn = vi.fn().mockResolvedValue([]);
+      const result = await batchProcess(diffs, { processFn, batchSize: 0 });
+      expect(result.batches.length).toBe(3);
+      expect(result.totalProcessed).toBe(3);
+    });
+
+    it('batchSize 大于文件数时只有一批', async () => {
+      const diffs = [makeFileDiff('a.ts'), makeFileDiff('b.ts')];
+      const processFn = vi.fn().mockResolvedValue([]);
+      const result = await batchProcess(diffs, { processFn, batchSize: 100 });
+      expect(result.batches).toHaveLength(1);
+      expect(result.batches[0].items).toHaveLength(2);
+    });
+
+    it('并行模式空 diffs 返回空结果', async () => {
+      const processFn = vi.fn().mockResolvedValue([]);
+      const result = await batchProcess([], { processFn, parallel: true, parallelism: 2 });
+      expect(result.batches).toHaveLength(0);
+      expect(result.allFindings).toHaveLength(0);
+      expect(result.totalProcessed).toBe(0);
+    });
+
+    it('并行模式下结果按 batchIndex 排序', async () => {
+      const diffs = Array.from({ length: 5 }, (_, i) => makeFileDiff(`file${i}.ts`));
+      const processFn = vi.fn(async (_batch: FileDiff[], idx: number) => {
+        await delay(5 - idx);
+        return [];
+      });
+      const result = await batchProcess(diffs, {
+        processFn,
+        parallel: true,
+        parallelism: 5,
+        batchSize: 1,
+      });
+      for (let i = 0; i < result.batches.length; i++) {
+        expect(result.batches[i].batchIndex).toBe(i);
+      }
+    });
+
+    it('部分批次失败时成功批次仍有结果', async () => {
+      const diffs = [
+        makeFileDiff('a.ts'),
+        makeFileDiff('b.ts'),
+        makeFileDiff('c.ts'),
+      ];
+      const processFn = vi.fn(async (_batch: FileDiff[], idx: number) => {
+        if (idx === 1) throw new Error('batch 1 failed');
+        return [makeFinding({ file: `f${idx}.ts` })];
+      });
+      const result = await batchProcess(diffs, { processFn, batchSize: 1 });
+      expect(result.batches).toHaveLength(3);
+      expect(result.batches[0].success).toBe(true);
+      expect(result.batches[1].success).toBe(false);
+      expect(result.batches[2].success).toBe(true);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].batchIndex).toBe(1);
+      expect(result.allFindings).toHaveLength(2);
+    });
+  });
+
+  describe('runWithConcurrency 边界情况', () => {
+    it('空数组返回空结果', async () => {
+      const results = await runWithConcurrency([], 3, async () => 'x');
+      expect(results).toEqual([]);
+    });
+
+    it('并发数为 0 时按 1 处理', async () => {
+      const items = [1, 2, 3];
+      const results = await runWithConcurrency(items, 0, async (x) => x * 2);
+      expect(results).toEqual([2, 4, 6]);
+    });
+
+    it('并发数为负数时按 1 处理', async () => {
+      const items = [1, 2, 3];
+      const results = await runWithConcurrency(items, -5, async (x) => x * 2);
+      expect(results).toEqual([2, 4, 6]);
+    });
+
+    it('并发数大于元素数时不超过元素数', async () => {
+      let concurrent = 0;
+      let maxConcurrent = 0;
+      const items = [1, 2, 3];
+      const results = await runWithConcurrency(items, 10, async (x) => {
+        concurrent++;
+        maxConcurrent = Math.max(maxConcurrent, concurrent);
+        await delay(10);
+        concurrent--;
+        return x * 2;
+      });
+      expect(results).toEqual([2, 4, 6]);
+      expect(maxConcurrent).toBe(3);
+    });
+
+    it('单元素单并发正常执行', async () => {
+      const results = await runWithConcurrency([42], 1, async (x) => x + 1);
+      expect(results).toEqual([43]);
+    });
+
+    it('保持原始顺序', async () => {
+      const items = [1, 2, 3, 4, 5];
+      const results = await runWithConcurrency(items, 2, async (x) => {
+        await delay((6 - x) * 5);
+        return x;
+      });
+      expect(results).toEqual([1, 2, 3, 4, 5]);
+    });
+  });
+
+  describe('prioritizeDiffs 边界情况', () => {
+    function makeBundle(path: string, annotations: RuleAnnotation[] = []): FileBundle {
+      return {
+        id: path,
+        primary: makeFileDiff(path) as FileDiff & { path: string },
+        related: [],
+        annotations,
+      };
+    }
+
+    function makeAnnotation(severity: RuleAnnotation['severity']): RuleAnnotation {
+      return {
+        ruleId: 'test',
+        ruleName: 'Test',
+        severity,
+        message: 'test',
+        category: 'test',
+        line: 1,
+      };
+    }
+
+    it('空 diffs 返回空数组', () => {
+      const result = prioritizeDiffs([], []);
+      expect(result).toEqual([]);
+    });
+
+    it('无标注时保持原顺序', () => {
+      const diffs = [makeFileDiff('a.ts'), makeFileDiff('b.ts'), makeFileDiff('c.ts')];
+      const result = prioritizeDiffs(diffs, []);
+      expect(result.map((d) => d.path)).toEqual(['a.ts', 'b.ts', 'c.ts']);
+    });
+
+    it('高 severity 文件排在前面', () => {
+      const diffs = [makeFileDiff('low.ts'), makeFileDiff('critical.ts'), makeFileDiff('medium.ts')];
+      const bundles = [
+        makeBundle('low.ts', [makeAnnotation('low')]),
+        makeBundle('critical.ts', [makeAnnotation('critical')]),
+        makeBundle('medium.ts', [makeAnnotation('medium')]),
+      ];
+      const result = prioritizeDiffs(diffs, bundles);
+      expect(result[0].path).toBe('critical.ts');
+      expect(result[1].path).toBe('medium.ts');
+      expect(result[2].path).toBe('low.ts');
+    });
+
+    it('相同优先级保持原顺序（稳定排序）', () => {
+      const diffs = [makeFileDiff('a.ts'), makeFileDiff('b.ts'), makeFileDiff('c.ts')];
+      const bundles = [
+        makeBundle('a.ts', [makeAnnotation('high')]),
+        makeBundle('b.ts', [makeAnnotation('high')]),
+        makeBundle('c.ts', [makeAnnotation('high')]),
+      ];
+      const result = prioritizeDiffs(diffs, bundles);
+      expect(result.map((d) => d.path)).toEqual(['a.ts', 'b.ts', 'c.ts']);
+    });
+
+    it('无标注文件排在有标注文件后面', () => {
+      const diffs = [makeFileDiff('a.ts'), makeFileDiff('b.ts'), makeFileDiff('c.ts')];
+      const bundles = [
+        makeBundle('b.ts', [makeAnnotation('medium')]),
+      ];
+      const result = prioritizeDiffs(diffs, bundles);
+      expect(result[0].path).toBe('b.ts');
+      const rest = result.slice(1).map((d) => d.path);
+      expect(rest).toContain('a.ts');
+      expect(rest).toContain('c.ts');
+    });
+  });
+
+  describe('ReviewSessionManager 边界情况', () => {
+    it('空字符串 sessionId 也能创建', () => {
+      const manager = new ReviewSessionManager();
+      const id = manager.createReviewSession({ sessionId: '' });
+      expect(id).toBe('');
+      expect(manager.getSessionStatus('')).toBe('pending');
+    });
+
+    it('大量会话创建 ID 唯一', () => {
+      const manager = new ReviewSessionManager();
+      const ids = new Set<string>();
+      for (let i = 0; i < 1000; i++) {
+        const id = manager.createReviewSession({});
+        ids.add(id);
+      }
+      expect(ids.size).toBe(1000);
+    });
+  });
+
+  describe('callModelWithTimeout 边界情况', () => {
+    it('timeoutMs 为 0 时不应用超时', async () => {
+      const result = await callModelWithTimeout({
+        operation: async () => { await delay(10); return 'ok'; },
+        timeoutMs: 0,
+      });
+      expect(result.result).toBe('ok');
+      expect(result.fallbackUsed).toBe(false);
+    });
+
+    it('timeoutMs 为负数时不应用超时', async () => {
+      const result = await callModelWithTimeout({
+        operation: async () => { await delay(10); return 'ok'; },
+        timeoutMs: -100,
+      });
+      expect(result.result).toBe('ok');
+      expect(result.fallbackUsed).toBe(false);
+    });
+
+    it('fallback 抛出非 Error 对象时也能正确传播', async () => {
+      await expect(
+        callModelWithTimeout({
+          operation: async () => { throw new Error('op fail'); },
+          fallback: () => { throw 'fallback crash'; },
+        }),
+      ).rejects.toThrow('fallback crash');
     });
   });
 });

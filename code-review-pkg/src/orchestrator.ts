@@ -30,6 +30,20 @@ import { callLLM, buildBatchReflectionPrompt } from './ai-reflection.js';
 import { getImpactRadius } from './mcp-adapter.js';
 import { ParallelTuner, getDefaultParallelism } from './parallel-tuner.js';
 
+function ensureError(err: unknown): Error {
+  return err instanceof Error ? err : new Error(String(err));
+}
+
+function collectFindingsFromResults(results: Map<string, unknown>): Finding[] {
+  const allFindings: Finding[] = [];
+  for (const [, result] of results) {
+    if (Array.isArray(result)) {
+      allFindings.push(...(result as Finding[]));
+    }
+  }
+  return allFindings;
+}
+
 // ============================================================
 // 审查会话管理器
 // ============================================================
@@ -311,8 +325,7 @@ export async function executeDag<T = unknown>(
         results.set(node.id, result);
         completed.add(node.id);
       } catch (err) {
-        const error = err instanceof Error ? err : new Error(String(err));
-        errors.set(node.id, error);
+        errors.set(node.id, ensureError(err));
         failed.add(node.id);
       }
     });
@@ -373,6 +386,10 @@ const SEVERITY_RANK: Record<string, number> = {
   info: 0,
 };
 
+function getSeverityRank(severity: string): number {
+  return SEVERITY_RANK[severity] ?? 0;
+}
+
 /**
  * 合并多个 Agent 的 findings，并解决冲突。
  *
@@ -386,7 +403,6 @@ export function mergeResults(results: Finding[][]): Finding[] {
   const all = results.flat();
   if (all.length === 0) return [];
 
-  // 按 file:line 分组
   const groups = new Map<string, Finding[]>();
   for (const f of all) {
     const key = `${f.file}:${f.line}`;
@@ -404,17 +420,8 @@ export function mergeResults(results: Finding[][]): Finding[] {
       merged.push(group[0]);
       continue;
     }
-    // 找到最高 severity 权重
-    let maxRank = -1;
-    for (const f of group) {
-      const rank = SEVERITY_RANK[f.severity] ?? 0;
-      if (rank > maxRank) maxRank = rank;
-    }
-    // 保留所有达到最高权重的 findings
-    for (const f of group) {
-      const rank = SEVERITY_RANK[f.severity] ?? 0;
-      if (rank === maxRank) merged.push(f);
-    }
+    const maxRank = Math.max(...group.map((f) => getSeverityRank(f.severity)));
+    merged.push(...group.filter((f) => getSeverityRank(f.severity) === maxRank));
   }
 
   return merged;
@@ -437,8 +444,8 @@ const DEFAULT_IMPACT_THRESHOLD = 5;
  * @returns true 表示应跳过
  */
 export function shouldSkipImpactAnalysis(fileCount: number, threshold: number = DEFAULT_IMPACT_THRESHOLD): boolean {
-  // 0 文件时无条件跳过（无内容可分析）
-  if (fileCount === 0) return true;
+  if (fileCount <= 0) return true;
+  if (threshold <= 0) return false;
   return fileCount < threshold;
 }
 
@@ -611,21 +618,25 @@ export function buildReviewDag(
     },
   ];
 
+  function createLLMReviewerHandler(id: string, prompt: string): () => Promise<Finding[]> {
+    return async () => {
+      if (!llmConfig || !prompt) return [];
+      try {
+        const response = await callLLMFn(prompt, llmConfig);
+        return parseFindingsFromLLMResponse(response);
+      } catch (err) {
+        console.warn(`${id} LLM call failed, returning empty:`, err);
+        return [];
+      }
+    };
+  }
+
   if (includeAIReviewer) {
     nodes.push({
       id: 'ai-reviewer',
       agentType: 'ai-reviewer',
       dependencies: [],
-      handler: async () => {
-        if (!llmConfig || !reviewPrompt) return [];
-        try {
-          const response = await callLLMFn(reviewPrompt, llmConfig);
-          return parseFindingsFromLLMResponse(response);
-        } catch (err) {
-          console.warn('ai-reviewer LLM call failed, returning empty:', err);
-          return [];
-        }
-      },
+      handler: createLLMReviewerHandler('ai-reviewer', reviewPrompt),
     });
   }
 
@@ -634,16 +645,7 @@ export function buildReviewDag(
       id: 'security-reviewer',
       agentType: 'security-reviewer',
       dependencies: [],
-      handler: async () => {
-        if (!llmConfig || !securityPrompt) return [];
-        try {
-          const response = await callLLMFn(securityPrompt, llmConfig);
-          return parseFindingsFromLLMResponse(response);
-        } catch (err) {
-          console.warn('security-reviewer LLM call failed, returning empty:', err);
-          return [];
-        }
-      },
+      handler: createLLMReviewerHandler('security-reviewer', securityPrompt),
     });
   }
 
@@ -676,14 +678,9 @@ export function buildReviewDag(
       dependencies: ['impact-analyzer'],
       handler: async (ctx) => {
         if (!llmConfig) return [];
+        const allFindings = collectFindingsFromResults(ctx.previousResults);
+        if (allFindings.length === 0) return [];
         try {
-          const allFindings: Finding[] = [];
-          for (const [, result] of ctx.previousResults) {
-            if (Array.isArray(result)) {
-              allFindings.push(...(result as Finding[]));
-            }
-          }
-          if (allFindings.length === 0) return [];
           const reflectionPrompt = buildBatchReflectionPrompt(allFindings);
           const response = await callLLMFn(reflectionPrompt, llmConfig);
           const confidenceResults = JSON.parse(response) as Array<{ id: number; confidence: number }>;
@@ -693,12 +690,6 @@ export function buildReviewDag(
           return allFindings;
         } catch (err) {
           console.warn('reflector LLM call failed, returning original findings:', err);
-          const allFindings: Finding[] = [];
-          for (const [, result] of ctx.previousResults) {
-            if (Array.isArray(result)) {
-              allFindings.push(...(result as Finding[]));
-            }
-          }
           return allFindings;
         }
       },
@@ -727,8 +718,7 @@ export async function withFallback<T>(
   try {
     return await operation();
   } catch (err) {
-    const error = err instanceof Error ? err : new Error(String(err));
-    return await fallbackFn(error);
+    return await fallbackFn(ensureError(err));
   }
 }
 
@@ -759,9 +749,9 @@ export async function withRetry<T>(
   operation: () => Promise<T>,
   options?: RetryOptions,
 ): Promise<T> {
-  const maxRetries = options?.maxRetries ?? 3;
-  const baseDelayMs = options?.baseDelayMs ?? 100;
-  const maxDelayMs = options?.maxDelayMs ?? 10_000;
+  const maxRetries = Math.max(0, options?.maxRetries ?? 3);
+  const baseDelayMs = Math.max(0, options?.baseDelayMs ?? 100);
+  const maxDelayMs = Math.max(0, options?.maxDelayMs ?? 10_000);
   const shouldRetry = options?.shouldRetry ?? (() => true);
 
   let lastError: Error | null = null;
@@ -769,17 +759,16 @@ export async function withRetry<T>(
     try {
       return await operation();
     } catch (err) {
-      lastError = err instanceof Error ? err : new Error(String(err));
-      // 最后一次尝试或不应重试：直接抛出
+      lastError = ensureError(err);
       if (attempt === maxRetries || !shouldRetry(lastError, attempt)) {
         throw lastError;
       }
-      // 指数退避：base * 2^attempt，上限 maxDelay
       const delay = Math.min(baseDelayMs * Math.pow(2, attempt), maxDelayMs);
-      await new Promise<void>((resolve) => setTimeout(resolve, delay));
+      if (delay > 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, delay));
+      }
     }
   }
-  // 理论上不会到达
   throw lastError!;
 }
 
@@ -818,7 +807,7 @@ export async function getReviewContextWithFallback(
     const context = await options.mcpOperation();
     return { context, fallbackUsed: false, fullTextFiles };
   } catch (err) {
-    console.warn('[orchestrator] getReviewContextWithFallback MCP operation failed, falling back:', err);
+    console.warn('[orchestrator] getReviewContextWithFallback MCP operation failed, falling back:', ensureError(err));
     return { context: null, fallbackUsed: true, fullTextFiles };
   }
 }
@@ -867,7 +856,6 @@ export async function callModelWithTimeout<T>(
   try {
     let result: T;
     if (timeoutMs !== undefined && timeoutMs > 0) {
-      // 超时竞速：操作 vs 定时器
       result = await Promise.race([
         operation(),
         new Promise<never>((_, reject) =>
@@ -879,7 +867,8 @@ export async function callModelWithTimeout<T>(
     }
     return { result, fallbackUsed: false, skipped: false };
   } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
+    const error = ensureError(err);
+    const reason = error.message;
     if (fallback) {
       const fallbackResult = await fallback();
       return { result: fallbackResult, fallbackUsed: true, skipped: false, reason };
@@ -887,7 +876,7 @@ export async function callModelWithTimeout<T>(
     if (skipOnTimeout) {
       return { result: null, fallbackUsed: false, skipped: true, reason };
     }
-    throw err instanceof Error ? err : new Error(reason);
+    throw error;
   }
 }
 
@@ -987,6 +976,45 @@ export async function runWithConcurrency<T, R>(
   return results;
 }
 
+function splitBatches(diffs: FileDiff[], batchSize: number): FileDiff[][] {
+  const size = Math.max(1, batchSize);
+  const batches: FileDiff[][] = [];
+  for (let i = 0; i < diffs.length; i += size) {
+    batches.push(diffs.slice(i, i + size));
+  }
+  return batches;
+}
+
+async function processSingleBatch(
+  batch: FileDiff[],
+  idx: number,
+  processFn: (batch: FileDiff[], batchIndex: number) => Promise<Finding[]>,
+  pauseSignal: PauseSignal | undefined,
+  errors: BatchError[],
+): Promise<BatchResult> {
+  if (pauseSignal) {
+    await pauseSignal.waitWhilePaused();
+  }
+  try {
+    const findings = await processFn(batch, idx);
+    return {
+      batchIndex: idx,
+      items: batch,
+      findings,
+      success: true,
+    };
+  } catch (err) {
+    const error = ensureError(err);
+    errors.push({ batchIndex: idx, error });
+    return {
+      batchIndex: idx,
+      items: batch,
+      findings: [],
+      success: false,
+    };
+  }
+}
+
 /**
  * 将文件列表分批处理。
  *
@@ -1006,18 +1034,14 @@ export async function batchProcess(
   const parallel = options.parallel ?? false;
   const pauseSignal = options.pauseSignal;
 
-  // 切分批次
-  const batches: FileDiff[][] = [];
-  for (let i = 0; i < diffs.length; i += batchSize) {
-    batches.push(diffs.slice(i, i + batchSize));
-  }
-
-  const results: BatchResult[] = [];
+  const batches = splitBatches(diffs, batchSize);
   const errors: BatchError[] = [];
-  const allFindings: Finding[] = [];
+  const totalProcessed = diffs.length;
+
+  let results: BatchResult[];
+  let effectiveParallelism: number;
 
   if (parallel) {
-    // Task 5：并行调优 — 基于 diffs 自动计算并行度
     let parallelism = options.parallelism;
     const useTuner = options.useTuner ?? true;
     if (parallelism === undefined && useTuner) {
@@ -1028,92 +1052,35 @@ export async function batchProcess(
     if (parallelism === undefined || parallelism < 1) {
       parallelism = getDefaultParallelism();
     }
-    // 不超过批次数
     parallelism = Math.min(parallelism, Math.max(1, batches.length));
 
-    // 受限并发执行批次
     const taskResults = await runWithConcurrency(
       batches,
       parallelism,
-      async (batch, idx): Promise<BatchResult> => {
-        // 暂停检查
-        if (pauseSignal) {
-          await pauseSignal.waitWhilePaused();
-        }
-        try {
-          const findings = await options.processFn(batch, idx);
-          return {
-            batchIndex: idx,
-            items: batch,
-            findings,
-            success: true,
-          };
-        } catch (err) {
-          const error = err instanceof Error ? err : new Error(String(err));
-          errors.push({ batchIndex: idx, error });
-          return {
-            batchIndex: idx,
-            items: batch,
-            findings: [],
-            success: false,
-          };
-        }
-      },
+      async (batch, idx) => processSingleBatch(batch, idx, options.processFn, pauseSignal, errors),
     );
-    for (const r of taskResults) {
-      results.push(r);
-      allFindings.push(...r.findings);
+    results = taskResults.sort((a, b) => a.batchIndex - b.batchIndex);
+    effectiveParallelism = parallelism;
+  } else {
+    results = [];
+    for (let idx = 0; idx < batches.length; idx++) {
+      const result = await processSingleBatch(batches[idx], idx, options.processFn, pauseSignal, errors);
+      results.push(result);
     }
-    // 按 batchIndex 排序保证顺序
-    results.sort((a, b) => a.batchIndex - b.batchIndex);
-
-    const totalProcessed = batches.reduce((s, b) => s + b.length, 0);
-    return {
-      batches: results,
-      allFindings,
-      errors,
-      totalProcessed,
-      effectiveParallelism: parallelism,
-    };
+    effectiveParallelism = 1;
   }
 
-  // 顺序执行
-  for (let idx = 0; idx < batches.length; idx++) {
-    const batch = batches[idx];
-    // 暂停检查
-    if (pauseSignal) {
-      await pauseSignal.waitWhilePaused();
-    }
-    try {
-      const findings = await options.processFn(batch, idx);
-      results.push({
-        batchIndex: idx,
-        items: batch,
-        findings,
-        success: true,
-      });
-      allFindings.push(...findings);
-    } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      errors.push({ batchIndex: idx, error });
-      results.push({
-        batchIndex: idx,
-        items: batch,
-        findings: [],
-        success: false,
-      });
-    }
+  const allFindings: Finding[] = [];
+  for (const r of results) {
+    allFindings.push(...r.findings);
   }
-
-  // totalProcessed 计算所有批次的文件数（包括失败的批次，因为文件已被"分配"到批次）
-  const totalProcessed = batches.reduce((s, b) => s + b.length, 0);
 
   return {
     batches: results,
     allFindings,
     errors,
     totalProcessed,
-    effectiveParallelism: 1,
+    effectiveParallelism,
   };
 }
 
@@ -1130,35 +1097,23 @@ export function prioritizeDiffs(
   diffs: FileDiff[],
   annotatedBundles: FileBundle[],
 ): FileDiff[] {
-  // severity 权重
-  const severityWeight: Record<string, number> = {
-    critical: 5,
-    high: 4,
-    medium: 3,
-    low: 2,
-    info: 1,
-  };
-
-  // 文件路径 → 最高 severity 权重
   const filePriority = new Map<string, number>();
   for (const bundle of annotatedBundles) {
     const path = bundle.primary.path;
     let maxWeight = 0;
     for (const ann of bundle.annotations) {
-      const w = severityWeight[ann.severity] ?? 0;
+      const w = getSeverityRank(ann.severity);
       if (w > maxWeight) maxWeight = w;
     }
-    // 同一文件可能存在多个 bundle，取最大权重
     const existing = filePriority.get(path) ?? 0;
     if (maxWeight > existing) {
       filePriority.set(path, maxWeight);
     }
   }
 
-  // 稳定排序：相同优先级保持原顺序
   return [...diffs].sort((a, b) => {
     const wA = filePriority.get(a.path) ?? 0;
     const wB = filePriority.get(b.path) ?? 0;
-    return wB - wA; // 降序：高优先级在前
+    return wB - wA;
   });
 }
