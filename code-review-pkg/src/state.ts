@@ -63,6 +63,9 @@ export interface TrendStats {
   byCategory: Record<string, number>;
 }
 
+/** 度量指标摘要（迭代 10）—— 与 TrendStats 结构一致，保留别名以兼容公共 API */
+export type MetricsSummary = TrendStats;
+
 /** 查询会话过滤选项 */
 export interface ListSessionsFilter {
   status?: SessionStatus;
@@ -102,6 +105,10 @@ interface PersistShape {
 }
 
 const SEVERITY_KEYS: (Severity | 'info')[] = ['critical', 'high', 'medium', 'low', 'info'];
+
+function createEmptyBySeverity(): Record<Severity | 'info', number> {
+  return { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+}
 
 /**
  * 状态存储：管理会话状态机、findings 持久化、断点续审、历史趋势统计。
@@ -198,10 +205,14 @@ export class StateStore {
   /**
    * 创建新会话。
    * @throws 当 ID 已存在时抛出错误
+   * @throws 当 filesTotal 为负数时抛出错误
    */
   createSession(options: CreateSessionOptions): Session {
     if (this.sessions.has(options.id)) {
       throw new Error(`Session with id "${options.id}" already exists`);
+    }
+    if (options.filesTotal < 0) {
+      throw new Error(`filesTotal must be non-negative, got ${options.filesTotal}`);
     }
     const now = options.createdAt ?? Date.now();
     const session: Session = {
@@ -256,10 +267,14 @@ export class StateStore {
   /**
    * 累加已处理文件数。
    * @returns 更新后的会话；不存在返回 null
+   * @throws 当 count 为负数时抛出错误
    */
   incrementFilesProcessed(id: string, count: number = 1): Session | null {
     const s = this.sessions.get(id);
     if (!s) return null;
+    if (count < 0) {
+      throw new Error(`count must be non-negative, got ${count}`);
+    }
     s.filesProcessed += count;
     s.updatedAt = Date.now();
     this.maybeFlush();
@@ -272,13 +287,28 @@ export class StateStore {
     if (filter?.status) {
       list = list.filter((s) => s.status === filter.status);
     }
-    list.sort((a, b) => {
+    this.sortSessionsByCreatedAtDesc(list);
+    return list.map((s) => ({ ...s }));
+  }
+
+  /** 按 createdAt 倒序排序，createdAt 相等时按插入顺序倒序 */
+  private sortSessionsByCreatedAtDesc(sessions: Session[]): void {
+    sessions.sort((a, b) => {
       if (b.createdAt !== a.createdAt) return b.createdAt - a.createdAt;
       const sa = this.sessionSeq.get(a.id) ?? 0;
       const sb = this.sessionSeq.get(b.id) ?? 0;
       return sb - sa;
     });
-    return list.map((s) => ({ ...s }));
+  }
+
+  /** 按 createdAt 升序排序，createdAt 相等时按插入顺序升序 */
+  private sortSessionsByCreatedAtAsc(sessions: Session[]): void {
+    sessions.sort((a, b) => {
+      if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
+      const sa = this.sessionSeq.get(a.id) ?? 0;
+      const sb = this.sessionSeq.get(b.id) ?? 0;
+      return sa - sb;
+    });
   }
 
   /** 删除会话及其关联 findings；返回是否实际删除 */
@@ -304,9 +334,8 @@ export class StateStore {
     if (!Array.isArray(findings) || findings.length === 0) {
       return 0;
     }
-    for (const f of findings) {
-      this.findings.push({ sessionId, finding: { ...f } });
-    }
+    const toAdd = findings.map((f) => ({ sessionId, finding: { ...f } }));
+    this.findings.push(...toAdd);
     const s = this.sessions.get(sessionId)!;
     s.updatedAt = Date.now();
     this.maybeFlush();
@@ -353,52 +382,13 @@ export class StateStore {
   resumeInterruptedSessions(opts?: ResumeOptions): Session[] {
     const recoverable: SessionStatus[] = opts?.recoverableStatuses ?? ['pending', 'running'];
     const list = Array.from(this.sessions.values()).filter((s) => recoverable.includes(s.status));
-    list.sort((a, b) => {
-      if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
-      const sa = this.sessionSeq.get(a.id) ?? 0;
-      const sb = this.sessionSeq.get(b.id) ?? 0;
-      return sa - sb;
-    });
+    this.sortSessionsByCreatedAtAsc(list);
     return list.map((s) => ({ ...s }));
   }
 
   /** 历史趋势统计 */
   getTrendStats(opts?: TrendStatsOptions): TrendStats {
-    const since = opts?.since ?? 0;
-    const sessions = Array.from(this.sessions.values()).filter((s) => s.createdAt >= since);
-    const sessionIds = new Set(sessions.map((s) => s.id));
-    const findings = this.findings.filter((f) => sessionIds.has(f.sessionId));
-
-    const bySeverity = {
-      critical: 0, high: 0, medium: 0, low: 0, info: 0,
-    } as Record<Severity | 'info', number>;
-    const byCategory: Record<string, number> = {};
-    for (const { finding } of findings) {
-      const sev = (finding.severity as Severity | 'info') ?? 'info';
-      if (SEVERITY_KEYS.includes(sev)) {
-        bySeverity[sev]++;
-      }
-      const cat = finding.category ?? 'unknown';
-      byCategory[cat] = (byCategory[cat] ?? 0) + 1;
-    }
-
-    const completedSessions = sessions.filter((s) => s.status === 'completed').length;
-    const totalFindings = findings.length;
-    const avgFindingsPerSession = completedSessions > 0
-      ? totalFindings / completedSessions
-      : 0;
-
-    return {
-      totalSessions: sessions.length,
-      completedSessions,
-      failedSessions: sessions.filter((s) => s.status === 'failed').length,
-      runningSessions: sessions.filter((s) => s.status === 'running').length,
-      pendingSessions: sessions.filter((s) => s.status === 'pending').length,
-      totalFindings,
-      avgFindingsPerSession,
-      bySeverity,
-      byCategory,
-    };
+    return this.computeStats(opts?.since ?? 0);
   }
 
   /** 重置模块级默认实例（仅用于测试） */
@@ -413,14 +403,16 @@ export class StateStore {
    * @returns 摘要对象
    */
   getMetricsSummary(opts?: { since?: number }): MetricsSummary {
-    const since = opts?.since ?? 0;
+    return this.computeStats(opts?.since ?? 0);
+  }
+
+  /** 内部通用统计方法：供 getTrendStats 和 getMetricsSummary 共享 */
+  private computeStats(since: number): TrendStats {
     const sessions = Array.from(this.sessions.values()).filter((s) => s.createdAt >= since);
     const sessionIds = new Set(sessions.map((s) => s.id));
     const findings = this.findings.filter((f) => sessionIds.has(f.sessionId));
 
-    const bySeverity = {
-      critical: 0, high: 0, medium: 0, low: 0, info: 0,
-    } as Record<Severity | 'info', number>;
+    const bySeverity = createEmptyBySeverity();
     const byCategory: Record<string, number> = {};
     for (const { finding } of findings) {
       const sev = (finding.severity as Severity | 'info') ?? 'info';
@@ -431,7 +423,27 @@ export class StateStore {
       byCategory[cat] = (byCategory[cat] ?? 0) + 1;
     }
 
-    const completedSessions = sessions.filter((s) => s.status === 'completed').length;
+    let completedSessions = 0;
+    let failedSessions = 0;
+    let runningSessions = 0;
+    let pendingSessions = 0;
+    for (const s of sessions) {
+      switch (s.status) {
+        case 'completed':
+          completedSessions++;
+          break;
+        case 'failed':
+          failedSessions++;
+          break;
+        case 'running':
+          runningSessions++;
+          break;
+        case 'pending':
+          pendingSessions++;
+          break;
+      }
+    }
+
     const totalFindings = findings.length;
     const avgFindingsPerSession = completedSessions > 0
       ? totalFindings / completedSessions
@@ -440,37 +452,15 @@ export class StateStore {
     return {
       totalSessions: sessions.length,
       completedSessions,
-      failedSessions: sessions.filter((s) => s.status === 'failed').length,
-      runningSessions: sessions.filter((s) => s.status === 'running').length,
-      pendingSessions: sessions.filter((s) => s.status === 'pending').length,
+      failedSessions,
+      runningSessions,
+      pendingSessions,
       totalFindings,
       avgFindingsPerSession,
       bySeverity,
       byCategory,
     };
   }
-}
-
-/** 度量指标摘要（迭代 10） */
-export interface MetricsSummary {
-  /** 总会话数 */
-  totalSessions: number;
-  /** 已完成会话数 */
-  completedSessions: number;
-  /** 失败会话数 */
-  failedSessions: number;
-  /** 运行中会话数 */
-  runningSessions: number;
-  /** 待处理会话数 */
-  pendingSessions: number;
-  /** 总 findings 数 */
-  totalFindings: number;
-  /** 平均每会话 findings 数 */
-  avgFindingsPerSession: number;
-  /** 严重度分布 */
-  bySeverity: Record<Severity | 'info', number>;
-  /** 类别分布 */
-  byCategory: Record<string, number>;
 }
 
 // ==================== 模块级默认实例 API ====================

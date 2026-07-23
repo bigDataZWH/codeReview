@@ -126,6 +126,16 @@ export interface ReviewMetrics {
 /** 一天的毫秒数 */
 const ONE_DAY_MS = 86400 * 1000;
 
+/** 安全除法：分母为 0 时返回 0 */
+function safeDiv(numerator: number, denominator: number): number {
+  return denominator > 0 ? numerator / denominator : 0;
+}
+
+/** 计算时间戳所属的天桶起始时间 */
+function getBucketStart(ts: number, minTime: number): number {
+  return Math.floor((ts - minTime) / ONE_DAY_MS) * ONE_DAY_MS + minTime;
+}
+
 /**
  * 收集度量指标。
  *
@@ -134,15 +144,15 @@ const ONE_DAY_MS = 86400 * 1000;
  */
 export function collectMetrics(input: MetricsInput): ReviewMetrics {
   const { sessions, findings, feedback } = input;
-  const tokenConsumed = input.tokenConsumed ?? 0;
+  const tokenConsumed = Math.max(0, input.tokenConsumed ?? 0);
 
   // ── 覆盖率 ──
   const totalSessions = sessions.length;
   const completedSessions = sessions.filter((s) => s.status === 'completed').length;
-  const totalFiles = sessions.reduce((s, sess) => s + sess.filesTotal, 0);
-  const processedFiles = sessions.reduce((s, sess) => s + sess.filesProcessed, 0);
-  const prCoverage = totalSessions > 0 ? completedSessions / totalSessions : 0;
-  const fileCoverage = totalFiles > 0 ? processedFiles / totalFiles : 0;
+  const totalFiles = sessions.reduce((s, sess) => s + Math.max(0, sess.filesTotal), 0);
+  const processedFiles = sessions.reduce((s, sess) => s + Math.max(0, sess.filesProcessed), 0);
+  const prCoverage = safeDiv(completedSessions, totalSessions);
+  const fileCoverage = safeDiv(processedFiles, totalFiles);
 
   // ── 质量 ──
   const severityDistribution: Record<Severity | 'info', number> = {
@@ -151,33 +161,29 @@ export function collectMetrics(input: MetricsInput): ReviewMetrics {
   const categoryDistribution: Record<string, number> = {};
   for (const f of findings) {
     const sev = (f.severity as Severity | 'info') ?? 'info';
-    if (sev in severityDistribution) {
-      severityDistribution[sev]++;
-    } else {
-      severityDistribution.info++;
-    }
+    severityDistribution[sev in severityDistribution ? sev : 'info']++;
     const cat = f.category ?? 'unknown';
     categoryDistribution[cat] = (categoryDistribution[cat] ?? 0) + 1;
   }
-  const avgFindingsPerFile = totalFiles > 0 ? findings.length / totalFiles : 0;
+  const avgFindingsPerFile = safeDiv(findings.length, totalFiles);
 
   const stats = feedback.getFeedbackStats();
-  const acceptRate = stats.total > 0 ? stats.acceptCount / stats.total : 0;
-  const rejectRate = stats.total > 0 ? stats.rejectCount / stats.total : 0;
+  const acceptRate = safeDiv(stats.acceptCount, stats.total);
+  const rejectRate = safeDiv(stats.rejectCount, stats.total);
 
   // ── 成本 ──
-  const totalLines = sessions.reduce((s, sess) => s + (sess.linesAnalyzed ?? 0), 0);
+  const totalLines = sessions.reduce((s, sess) => s + Math.max(0, sess.linesAnalyzed ?? 0), 0);
   const tokensPerKLine = totalLines > 0 ? (tokenConsumed / totalLines) * 1000 : 0;
 
   // ── 效率 ──
-  const fixRate = findings.length > 0 ? stats.acceptCount / findings.length : 0;
+  const fixRate = safeDiv(stats.acceptCount, findings.length);
   let totalDurationMs = 0;
   for (const sess of sessions) {
-    if (sess.finishedAt !== undefined) {
+    if (sess.finishedAt !== undefined && sess.finishedAt >= sess.createdAt) {
       totalDurationMs += sess.finishedAt - sess.createdAt;
     }
   }
-  const avgDurationPerSession = completedSessions > 0 ? totalDurationMs / completedSessions : 0;
+  const avgDurationPerSession = safeDiv(totalDurationMs, completedSessions);
 
   // ── 趋势 ──
   const trend = computeTrend(sessions, input.findingsBySession, findings);
@@ -229,36 +235,38 @@ function computeTrend(
   const bucketMap = new Map<number, TrendBucket>();
 
   for (let t = minTime; t <= maxTime + ONE_DAY_MS; t += ONE_DAY_MS) {
-    const bucketStart = t;
-    const bucketEnd = t + ONE_DAY_MS;
-    const b: TrendBucket = { bucketStart, bucketEnd, findingCount: 0, sessionCount: 0 };
+    const b: TrendBucket = { bucketStart: t, bucketEnd: t + ONE_DAY_MS, findingCount: 0, sessionCount: 0 };
     buckets.push(b);
-    bucketMap.set(bucketStart, b);
+    bucketMap.set(t, b);
   }
 
   // 会话归桶
   for (const sess of sessions) {
-    const day = Math.floor((sess.createdAt - minTime) / ONE_DAY_MS) * ONE_DAY_MS + minTime;
+    const day = getBucketStart(sess.createdAt, minTime);
     const b = bucketMap.get(day);
     if (b) b.sessionCount++;
   }
 
-  // findings 归桶：优先按 findingsBySession，否则散落各桶
+  // findings 归桶：优先按 findingsBySession，否则均匀分布
   if (findingsBySession && findingsBySession.size > 0) {
     const sessionMap = new Map(sessions.map((s) => [s.id, s]));
     for (const [sid, fs] of findingsBySession.entries()) {
       const sess = sessionMap.get(sid);
       if (!sess) continue;
-      const day = Math.floor((sess.createdAt - minTime) / ONE_DAY_MS) * ONE_DAY_MS + minTime;
+      const day = getBucketStart(sess.createdAt, minTime);
       const b = bucketMap.get(day);
       if (b) b.findingCount += fs.length;
     }
   } else {
-    // 无会话映射时，所有 findings 平均分配到所有桶（避免趋势失真）
-    if (buckets.length > 0 && allFindings.length > 0) {
-      const perBucket = Math.ceil(allFindings.length / buckets.length);
-      for (const b of buckets) {
-        b.findingCount = Math.min(perBucket, allFindings.length);
+    // 无会话映射时，均匀分布到有会话的桶中（总数保持准确）
+    if (allFindings.length > 0) {
+      const activeBuckets = buckets.filter((b) => b.sessionCount > 0);
+      const targetBuckets = activeBuckets.length > 0 ? activeBuckets : buckets;
+      const baseCount = Math.floor(allFindings.length / targetBuckets.length);
+      let remainder = allFindings.length % targetBuckets.length;
+      for (const b of targetBuckets) {
+        b.findingCount = baseCount + (remainder > 0 ? 1 : 0);
+        remainder--;
       }
     }
   }

@@ -27,6 +27,9 @@ const VALID_ACTIONS: ReadonlySet<FeedbackAction> = new Set(['accept', 'reject', 
 /** 误报分析自动启用的最小反馈条数阈值 */
 export const FALSE_POSITIVE_ANALYSIS_THRESHOLD = 100;
 
+/** glob 正则缓存，避免重复编译同一模式 */
+const globRegexCache = new Map<string, RegExp>();
+
 /** 反馈记录 */
 export interface FeedbackRecord {
   /** 反馈唯一 ID（自动生成） */
@@ -122,7 +125,7 @@ export class FeedbackStore {
     if (!VALID_ACTIONS.has(action)) {
       throw new Error(`invalid feedback action: ${action}`);
     }
-    if (!findingId || typeof findingId !== 'string') {
+    if (typeof findingId !== 'string' || findingId.trim() === '') {
       throw new Error('findingId must be a non-empty string');
     }
     const id = this.generateId();
@@ -180,23 +183,20 @@ export class FeedbackStore {
    * 统计反馈总数与各动作比例（基于去重后的最新记录）。
    */
   getFeedbackStats(): FeedbackStats {
-    let acceptCount = 0;
-    let rejectCount = 0;
-    let modifyCount = 0;
+    const counts = { accept: 0, reject: 0, modify: 0 };
     for (const rec of this.feedbacks.values()) {
-      if (rec.action === 'accept') acceptCount++;
-      else if (rec.action === 'reject') rejectCount++;
-      else if (rec.action === 'modify') modifyCount++;
+      counts[rec.action]++;
     }
     const total = this.feedbacks.size;
+    const calcRate = (count: number) => (total > 0 ? count / total : 0);
     return {
       total,
-      acceptCount,
-      rejectCount,
-      modifyCount,
-      acceptRate: total > 0 ? acceptCount / total : 0,
-      rejectRate: total > 0 ? rejectCount / total : 0,
-      modifyRate: total > 0 ? modifyCount / total : 0,
+      acceptCount: counts.accept,
+      rejectCount: counts.reject,
+      modifyCount: counts.modify,
+      acceptRate: calcRate(counts.accept),
+      rejectRate: calcRate(counts.reject),
+      modifyRate: calcRate(counts.modify),
     };
   }
 
@@ -223,27 +223,17 @@ export class FeedbackStore {
     if (this.feedbacks.size < FALSE_POSITIVE_ANALYSIS_THRESHOLD) {
       return [];
     }
-    const buckets = new Map<string, { pattern: string; count: number }>();
+    const buckets = new Map<string, number>();
     for (const rec of this.feedbacks.values()) {
       if (rec.action !== 'reject') continue;
-      const pattern = rec.ruleId
-        ? `category:${rec.category}, ruleId:${rec.ruleId}`
-        : `category:${rec.category}`;
-      const entry = buckets.get(pattern);
-      if (entry) {
-        entry.count++;
-      } else {
-        buckets.set(pattern, { pattern, count: 1 });
-      }
+      const pattern = buildFalsePositivePattern(rec.category, rec.ruleId);
+      buckets.set(pattern, (buckets.get(pattern) ?? 0) + 1);
     }
-    const patterns: FalsePositivePattern[] = [];
-    for (const { pattern, count } of buckets.values()) {
-      patterns.push({
-        pattern,
-        count,
-        suggestion: `频繁误报：[${pattern}] 被拒绝 ${count} 次，建议调整规则或加入忽略列表`,
-      });
-    }
+    const patterns: FalsePositivePattern[] = Array.from(buckets.entries()).map(([pattern, count]) => ({
+      pattern,
+      count,
+      suggestion: `频繁误报：[${pattern}] 被拒绝 ${count} 次，建议调整规则或加入忽略列表`,
+    }));
     patterns.sort((a, b) => b.count - a.count);
     return patterns;
   }
@@ -260,17 +250,11 @@ export class FeedbackStore {
    */
   generateRuleSuggestions(): RuleSuggestion[] {
     const patterns = this.analyzeFalsePositivePatterns();
-    return patterns.map((p) => {
-      let priority: 'high' | 'medium' | 'low';
-      if (p.count >= 10) priority = 'high';
-      else if (p.count >= 5) priority = 'medium';
-      else priority = 'low';
-      return {
-        pattern: p.pattern,
-        suggestion: p.suggestion,
-        priority,
-      };
-    });
+    return patterns.map((p) => ({
+      pattern: p.pattern,
+      suggestion: p.suggestion,
+      priority: getPriorityByCount(p.count),
+    }));
   }
 
   /** 生成唯一反馈 ID */
@@ -278,6 +262,35 @@ export class FeedbackStore {
     this.seqCounter += 1;
     return `fb-${Date.now().toString(36)}-${this.seqCounter.toString(36)}`;
   }
+}
+
+// ==================== 辅助工具函数 ====================
+
+/** 构建误报模式字符串 */
+function buildFalsePositivePattern(category: string, ruleId?: string): string {
+  return ruleId ? `category:${category}, ruleId:${ruleId}` : `category:${category}`;
+}
+
+/** 根据 count 计算优先级 */
+function getPriorityByCount(count: number): 'high' | 'medium' | 'low' {
+  if (count >= 10) return 'high';
+  if (count >= 5) return 'medium';
+  return 'low';
+}
+
+/** 获取缓存的 glob 正则表达式 */
+function getCachedGlobRegex(pattern: string): RegExp {
+  let regex = globRegexCache.get(pattern);
+  if (!regex) {
+    regex = globToRegex(pattern);
+    globRegexCache.set(pattern, regex);
+  }
+  return regex;
+}
+
+/** 去除字符串两端的单/双引号 */
+function stripQuotes(s: string): string {
+  return s.replace(/^(["'])(.*)\1$/, '$2');
 }
 
 // ==================== 忽略配置 ====================
@@ -312,8 +325,8 @@ export interface IgnoreConfig {
  * @param ignoreConfig 忽略配置
  * @returns true 表示应忽略
  */
-export function shouldIgnore(finding: Finding, ignoreConfig: IgnoreConfig): boolean {
-  if (!ignoreConfig?.rules || ignoreConfig.rules.length === 0) return false;
+export function shouldIgnore(finding: Finding | null | undefined, ignoreConfig: IgnoreConfig | null | undefined): boolean {
+  if (!finding || !ignoreConfig?.rules || ignoreConfig.rules.length === 0) return false;
   for (const rule of ignoreConfig.rules) {
     if (matchesRule(finding, rule)) return true;
   }
@@ -331,7 +344,7 @@ function matchesRule(finding: Finding, rule: IgnoreRule): boolean {
     }
   }
   if (rule.filePattern !== undefined) {
-    if (typeof finding.file !== 'string' || !globToRegex(rule.filePattern).test(finding.file)) {
+    if (typeof finding.file !== 'string' || !getCachedGlobRegex(rule.filePattern).test(finding.file)) {
       return false;
     }
   }
@@ -356,7 +369,7 @@ function matchesRule(finding: Finding, rule: IgnoreRule): boolean {
  * @throws 当文件不存在或解析失败时抛出错误
  */
 export function loadIgnoreConfig(configPath: string): IgnoreConfig {
-  if (!configPath || !existsSync(configPath)) {
+  if (typeof configPath !== 'string' || configPath.trim() === '' || !existsSync(configPath)) {
     throw new Error(`ignore config file not found: ${configPath}`);
   }
   const text = readFileSync(configPath, 'utf8');
@@ -411,14 +424,6 @@ function assignRuleField(rule: IgnoreRule, key: string, rawVal: string): void {
       // 未知字段忽略
       break;
   }
-}
-
-/** 去除字符串两端的单/双引号 */
-function stripQuotes(s: string): string {
-  if (s.length >= 2 && ((s[0] === '"' && s[s.length - 1] === '"') || (s[0] === "'" && s[s.length - 1] === "'"))) {
-    return s.slice(1, -1);
-  }
-  return s;
 }
 
 // ==================== 一键标记误报（迭代 9） ====================
@@ -557,36 +562,39 @@ export function getRuleEffectiveness(store: FeedbackStore): RuleEffectiveness[] 
   for (const r of all) {
     if (!r.ruleId) continue;
     const entry = byRule.get(r.ruleId) ?? { accept: 0, reject: 0, modify: 0 };
-    if (r.action === 'accept') entry.accept++;
-    else if (r.action === 'reject') entry.reject++;
-    else if (r.action === 'modify') entry.modify++;
+    entry[r.action]++;
     byRule.set(r.ruleId, entry);
   }
 
-  const result: RuleEffectiveness[] = [];
-  for (const [ruleId, counts] of byRule.entries()) {
-    const total = counts.accept + counts.reject + counts.modify;
-    if (total === 0) continue;
-    const acceptRate = counts.accept / total;
-    const rejectRate = counts.reject / total;
-    let grade: RuleGrade;
-    if (acceptRate >= 0.7) grade = 'good';
-    else if (acceptRate >= 0.3) grade = 'medium';
-    else grade = 'poor';
-    result.push({
-      ruleId,
-      totalFeedback: total,
-      acceptCount: counts.accept,
-      rejectCount: counts.reject,
-      modifyCount: counts.modify,
-      acceptRate,
-      rejectRate,
-      grade,
-    });
-  }
+  const result: RuleEffectiveness[] = Array.from(byRule.entries())
+    .map(([ruleId, counts]) => {
+      const total = counts.accept + counts.reject + counts.modify;
+      if (total === 0) return null;
+      const acceptRate = counts.accept / total;
+      const rejectRate = counts.reject / total;
+      const grade = getRuleGrade(acceptRate);
+      return {
+        ruleId,
+        totalFeedback: total,
+        acceptCount: counts.accept,
+        rejectCount: counts.reject,
+        modifyCount: counts.modify,
+        acceptRate,
+        rejectRate,
+        grade,
+      };
+    })
+    .filter((item): item is RuleEffectiveness => item !== null);
 
   result.sort((a, b) => b.acceptRate - a.acceptRate);
   return result;
+}
+
+/** 根据 acceptRate 计算规则等级 */
+function getRuleGrade(acceptRate: number): RuleGrade {
+  if (acceptRate >= 0.7) return 'good';
+  if (acceptRate >= 0.3) return 'medium';
+  return 'poor';
 }
 
 /**

@@ -143,6 +143,94 @@ describe('迭代 6：上下文压缩', () => {
     // 原 diff 不应被修改
     expect(diff.hunks[0].lines.length).toBe(originalLineCount);
   });
+
+  it('compressContext contextLines=0 只保留关键行', () => {
+    const diff = makeDiff('a.ts', [
+      ' ctx 1',
+      ' ctx 2',
+      '+added',
+      ' ctx 3',
+      ' ctx 4',
+    ]);
+    const result = compressContext([diff], { contextLines: 0 });
+    const allLines = result[0].hunks.flatMap((h) => h.lines);
+    expect(allLines.every((l) => l.type === 'add' || l.type === 'delete')).toBe(true);
+  });
+
+  it('compressContext 无关键行时保留全部 context', () => {
+    const diff = makeDiff('a.ts', [
+      ' ctx 1',
+      ' ctx 2',
+      ' ctx 3',
+    ]);
+    const result = compressContext([diff], { contextLines: 1 });
+    const allLines = result[0].hunks.flatMap((h) => h.lines);
+    expect(allLines.length).toBe(3);
+  });
+
+  it('compressContext 多个 hunks 正确处理', () => {
+    const diff: FileDiff = {
+      path: 'a.ts',
+      status: 'modified',
+      hunks: [
+        {
+          oldStart: 1,
+          oldCount: 3,
+          newStart: 1,
+          newCount: 3,
+          header: '',
+          lines: [
+            { type: 'context', content: 'line 1', oldLineNumber: 1, newLineNumber: 1 },
+            { type: 'add', content: 'line 2', newLineNumber: 2 },
+            { type: 'context', content: 'line 3', oldLineNumber: 2, newLineNumber: 3 },
+          ],
+        },
+        {
+          oldStart: 10,
+          oldCount: 2,
+          newStart: 10,
+          newCount: 2,
+          header: '',
+          lines: [
+            { type: 'context', content: 'line 10', oldLineNumber: 10, newLineNumber: 10 },
+            { type: 'delete', content: 'line 11', oldLineNumber: 11 },
+          ],
+        },
+      ],
+    };
+    const result = compressContext([diff], { contextLines: 0 });
+    expect(result[0].hunks.length).toBe(2);
+    expect(result[0].hunks[0].lines.some((l) => l.type === 'add')).toBe(true);
+    expect(result[0].hunks[1].lines.some((l) => l.type === 'delete')).toBe(true);
+  });
+
+  it('compressContext oldCount/newCount 计算正确', () => {
+    const diff = makeDiff('a.ts', [
+      '+added',
+      '-removed',
+      ' context',
+    ]);
+    const result = compressContext([diff]);
+    const hunk = result[0].hunks[0];
+    expect(hunk.oldCount).toBe(2);
+    expect(hunk.newCount).toBe(2);
+  });
+
+  it('compressContext 只有 add 行时计数正确', () => {
+    const diff = makeDiff('a.ts', ['+a', '+b', '+c']);
+    const result = compressContext([diff]);
+    const hunk = result[0].hunks[0];
+    expect(hunk.oldCount).toBe(0);
+    expect(hunk.newCount).toBe(3);
+  });
+
+  it('compressContext 只有 delete 行时计数正确', () => {
+    const diff = makeDiff('a.ts', ['-a', '-b', '-c']);
+    const result = compressContext([diff]);
+    const hunk = result[0].hunks[0];
+    expect(hunk.oldCount).toBe(3);
+    expect(hunk.newCount).toBe(0);
+  });
 });
 
 // ── 分级模型策略 ──
@@ -237,6 +325,91 @@ describe('迭代 6：分级模型策略', () => {
     const tier = selectModelByComplexity(metrics, customTiers);
     expect(tier.tier).toBe('micro');
   });
+
+  it('selectModelByComplexity complexityScore=0 使用 smallest tier', () => {
+    const metrics: ComplexityMetrics = {
+      filesChanged: 0,
+      linesChanged: 0,
+      hunksCount: 0,
+      hasSecurityRisk: false,
+      complexityScore: 0,
+    };
+    const tier = selectModelByComplexity(metrics);
+    expect(tier.tier).toBe('small');
+  });
+
+  it('selectModelByComplexity 复杂度正好等于阈值时使用该 tier', () => {
+    const metrics: ComplexityMetrics = {
+      filesChanged: 1,
+      linesChanged: 1,
+      hunksCount: 1,
+      hasSecurityRisk: false,
+      complexityScore: 20,
+    };
+    const tier = selectModelByComplexity(metrics);
+    expect(tier.tier).toBe('small');
+  });
+
+  it('selectModelByComplexity 复杂度超过阈值时升级到下一档', () => {
+    const metrics: ComplexityMetrics = {
+      filesChanged: 1,
+      linesChanged: 1,
+      hunksCount: 1,
+      hasSecurityRisk: false,
+      complexityScore: 21,
+    };
+    const tier = selectModelByComplexity(metrics);
+    expect(tier.tier).toBe('medium');
+  });
+
+  it('selectModelByComplexity 自定义 tier 无 large 时安全风险用最后一档', () => {
+    const customTiers: Record<string, ModelTier> = {
+      tiny: {
+        tier: 'tiny',
+        model: 'gpt-tiny',
+        maxComplexity: 10,
+        maxTokens: 1000,
+        costPer1kTokens: 0.0001,
+      },
+      big: {
+        tier: 'big',
+        model: 'gpt-big',
+        maxComplexity: 100,
+        maxTokens: 10000,
+        costPer1kTokens: 0.01,
+      },
+    };
+    const metrics: ComplexityMetrics = {
+      filesChanged: 1,
+      linesChanged: 1,
+      hunksCount: 1,
+      hasSecurityRisk: true,
+      complexityScore: 1,
+    };
+    const tier = selectModelByComplexity(metrics, customTiers);
+    expect(tier.tier).toBe('big');
+  });
+
+  it('selectModelByComplexity 只有单个 tier 时始终返回该 tier', () => {
+    const customTiers: Record<string, ModelTier> = {
+      only: {
+        tier: 'only',
+        model: 'gpt-only',
+        maxComplexity: 50,
+        maxTokens: 5000,
+        costPer1kTokens: 0.001,
+      },
+    };
+    const metrics: ComplexityMetrics = {
+      filesChanged: 100,
+      linesChanged: 1000,
+      hunksCount: 100,
+      hasSecurityRisk: false,
+      complexityScore: 999,
+    };
+    const tier = selectModelByComplexity(metrics, customTiers);
+    expect(tier.tier).toBe('only');
+  });
 });
 
 // ── Token 预算控制 ──
@@ -263,6 +436,17 @@ describe('迭代 6：Token 预算控制', () => {
     const text = 'a'.repeat(8); // 2 tokens
     expect(fitsInBudget(text, 2)).toBe(true);
     expect(fitsInBudget(text, 1)).toBe(false);
+  });
+
+  it('fitsInBudget 空字符串与 0 预算', () => {
+    expect(fitsInBudget('', 0)).toBe(true);
+    expect(fitsInBudget('', 100)).toBe(true);
+  });
+
+  it('estimateTokenCount 中文字符估算更准确', () => {
+    const chineseText = '你好世界';
+    const tokens = estimateTokenCount(chineseText);
+    expect(tokens).toBe(4);
   });
 });
 
@@ -316,6 +500,18 @@ describe('迭代 6：成本预估', () => {
     expect(estimate.promptCost).toBeCloseTo(0.5, 5);
     expect(estimate.completionCost).toBeCloseTo(0.15, 5);
     expect(estimate.totalCost).toBeCloseTo(0.65, 5);
+  });
+
+  it('estimateTokenCost 仅 completion tokens 时计算正确', () => {
+    const estimate = estimateTokenCost({
+      promptTokens: 0,
+      completionTokens: 2000,
+      costPer1kPromptTokens: 0.01,
+      costPer1kCompletionTokens: 0.02,
+    });
+    expect(estimate.promptCost).toBe(0);
+    expect(estimate.completionCost).toBeCloseTo(0.04, 5);
+    expect(estimate.totalCost).toBeCloseTo(0.04, 5);
   });
 });
 
@@ -374,5 +570,45 @@ describe('迭代 6：综合优化', () => {
     });
     // 压缩比应 ≤ 0.7（即下降 ≥ 30%）
     expect(result.compressionRatio).toBeLessThanOrEqual(0.7);
+  });
+
+  it('optimizePrompt 全是空行和注释时压缩到空字符串', () => {
+    const prompt = '// comment\n\n  \n/* block */\n';
+    const result = optimizePrompt(prompt, {
+      stripBlankLines: true,
+      stripComments: true,
+    });
+    expect(result.optimized).toBe('');
+    expect(result.optimizedLength).toBe(0);
+    expect(result.compressionRatio).toBe(0);
+  });
+
+  it('optimizePrompt 只移除空行', () => {
+    const prompt = 'line1\n\nline2\n  \nline3';
+    const result = optimizePrompt(prompt, { stripBlankLines: true });
+    expect(result.optimized).toBe('line1\nline2\nline3');
+    expect(result.compressionRatio).toBeLessThan(1);
+  });
+
+  it('optimizePrompt 只移除注释', () => {
+    const prompt = '// comment\ncode here\n// another\nmore code';
+    const result = optimizePrompt(prompt, { stripComments: true });
+    expect(result.optimized).toBe('code here\nmore code');
+    expect(result.compressionRatio).toBeLessThan(1);
+  });
+
+  it('optimizePrompt 单行文本不移除', () => {
+    const prompt = 'const x = 1;';
+    const result = optimizePrompt(prompt, { stripBlankLines: true, stripComments: true });
+    expect(result.optimized).toBe(prompt);
+    expect(result.compressionRatio).toBe(1);
+  });
+
+  it('optimizePrompt 只有换行符时处理正确', () => {
+    const prompt = '\n\n\n';
+    const result = optimizePrompt(prompt, { stripBlankLines: true });
+    expect(result.optimized).toBe('');
+    expect(result.originalLength).toBe(3);
+    expect(result.compressionRatio).toBe(0);
   });
 });

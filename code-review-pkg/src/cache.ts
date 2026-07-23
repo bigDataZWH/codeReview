@@ -71,12 +71,23 @@ function hashKey(key: string): string {
 
 // ==================== L1 内存缓存 ====================
 
+/** L1 构造选项 */
+export interface L1MemoryCacheOptions {
+  /** 最大缓存条目数，超过后按 LRU 淘汰；默认无限制 */
+  maxSize?: number;
+}
+
 /**
  * L1 进程内内存缓存。
- * 基于 Map 实现，支持 TTL 失效。
+ * 基于 Map 实现，支持 TTL 失效与可选 LRU 淘汰。
  */
 export class L1MemoryCache {
   private map: Map<string, CacheEntry<unknown>> = new Map();
+  private readonly maxSize?: number;
+
+  constructor(options?: L1MemoryCacheOptions) {
+    this.maxSize = options?.maxSize;
+  }
 
   /** 写入缓存 */
   set<T>(key: string, value: T, opts?: CacheSetOptions): void {
@@ -86,7 +97,11 @@ export class L1MemoryCache {
       createdAt: now,
       expiresAt: opts?.ttl != null ? now + opts.ttl : undefined,
     };
+    if (this.map.has(key)) {
+      this.map.delete(key);
+    }
     this.map.set(key, entry);
+    this.evictIfNeeded();
   }
 
   /** 读取底层 entry（不删除过期项） */
@@ -97,6 +112,8 @@ export class L1MemoryCache {
       this.map.delete(key);
       return null;
     }
+    this.map.delete(key);
+    this.map.set(key, entry);
     return entry as unknown as CacheEntry<T>;
   }
 
@@ -145,6 +162,15 @@ export class L1MemoryCache {
       if (entry.expiresAt != null && now > entry.expiresAt) {
         this.map.delete(key);
       }
+    }
+  }
+
+  /** 超过 maxSize 时按 LRU 淘汰最久未使用的条目 */
+  private evictIfNeeded(): void {
+    if (this.maxSize == null || this.map.size <= this.maxSize) return;
+    const firstKey = this.map.keys().next().value;
+    if (firstKey != null) {
+      this.map.delete(firstKey);
     }
   }
 }
@@ -239,20 +265,7 @@ export class L2DiskCache {
 
   /** 判断 key 是否存在且未过期 */
   has(key: string): boolean {
-    const filename = this.keyToFilename.get(key);
-    if (!filename) return false;
-    try {
-      const raw = readFileSync(join(this.cacheDir, filename), 'utf8');
-      const data = JSON.parse(raw) as StoredEntry<unknown>;
-      if (data.expiresAt != null && Date.now() > data.expiresAt) {
-        this.delete(key);
-        return false;
-      }
-      return true;
-    } catch (err) {
-      console.warn('[cache] has failed to read cache file:', filename, err);
-      return false;
-    }
+    return this.getEntry(key) !== null;
   }
 
   /** 删除磁盘缓存文件，返回是否实际删除 */
@@ -364,32 +377,49 @@ export class CacheManager {
    * 自动累加 hits/misses，并按 key 前缀统计分类命中率。
    */
   get<T>(key: string): T | undefined {
-    const category = getCategory(key);
-    // L1 命中
+    const result = this.getInternal<T>(key);
+    if (result.hit) {
+      this.recordHit(key);
+      return result.value;
+    }
+    this.recordMiss(key);
+    return undefined;
+  }
+
+  /**
+   * 内部读取：先查 L1，未命中查 L2，命中 L2 时回填 L1。
+   * 不统计命中，由调用方负责。
+   */
+  private getInternal<T>(key: string): { hit: true; value: T } | { hit: false } {
     if (this.l1.has(key)) {
-      this.hits++;
-      if (category !== 'other') {
-        this.categoryHits[category]++;
-      }
-      return this.l1.get<T>(key);
+      return { hit: true, value: this.l1.get<T>(key) as T };
     }
-    // L1 未命中，尝试 L2
-    if (this.enableL2 && this.l2.has(key)) {
-      const v = this.l2.get<T>(key);
-      // 回填 L1
-      this.l1.set(key, v);
-      this.hits++;
-      if (category !== 'other') {
-        this.categoryHits[category]++;
+    if (this.enableL2) {
+      const l2Value = this.l2.get<T>(key);
+      if (l2Value !== undefined) {
+        this.l1.set(key, l2Value);
+        return { hit: true, value: l2Value };
       }
-      return v;
     }
-    // 全部未命中
+    return { hit: false };
+  }
+
+  /** 记录一次命中 */
+  private recordHit(key: string): void {
+    this.hits++;
+    const category = getCategory(key);
+    if (category !== 'other') {
+      this.categoryHits[category]++;
+    }
+  }
+
+  /** 记录一次未命中 */
+  private recordMiss(key: string): void {
     this.misses++;
+    const category = getCategory(key);
     if (category !== 'other') {
       this.categoryMisses[category]++;
     }
-    return undefined;
   }
 
   /** 判断 key 是否存在（L1 或 L2 任一存在即可） */
@@ -431,16 +461,7 @@ export class CacheManager {
    * @returns 删除的唯一 key 数量
    */
   invalidateByPrefix(prefix: string): number {
-    const l1Keys = this.l1.keys().filter((k) => k.startsWith(prefix));
-    const l2Keys = this.enableL2
-      ? this.l2.keys().filter((k) => k.startsWith(prefix))
-      : [];
-    const allKeys = new Set<string>([...l1Keys, ...l2Keys]);
-    for (const key of allKeys) {
-      this.l1.delete(key);
-      if (this.enableL2) this.l2.delete(key);
-    }
-    return allKeys.size;
+    return this.invalidateBy((k) => k.startsWith(prefix));
   }
 
   /**
@@ -448,9 +469,17 @@ export class CacheManager {
    * @returns 删除的唯一 key 数量
    */
   invalidateByPattern(pattern: RegExp): number {
-    const l1Keys = this.l1.keys().filter((k) => pattern.test(k));
+    return this.invalidateBy((k) => pattern.test(k));
+  }
+
+  /**
+   * 按条件失效：删除所有 predicate 返回 true 的 key。
+   * @returns 删除的唯一 key 数量
+   */
+  private invalidateBy(predicate: (key: string) => boolean): number {
+    const l1Keys = this.l1.keys().filter(predicate);
     const l2Keys = this.enableL2
-      ? this.l2.keys().filter((k) => pattern.test(k))
+      ? this.l2.keys().filter(predicate)
       : [];
     const allKeys = new Set<string>([...l1Keys, ...l2Keys]);
     for (const key of allKeys) {
@@ -511,41 +540,20 @@ export class CacheManager {
     factory: () => T | Promise<T>,
     opts?: CacheSetOptions,
   ): T | Promise<T> {
-    const category = getCategory(key);
-    // 先检查缓存命中
-    if (this.l1.has(key)) {
-      this.hits++;
-      if (category !== 'other') {
-        this.categoryHits[category]++;
-      }
-      return this.l1.get<T>(key) as T;
+    const cached = this.getInternal<T>(key);
+    if (cached.hit) {
+      this.recordHit(key);
+      return cached.value;
     }
-    if (this.enableL2 && this.l2.has(key)) {
-      const v = this.l2.get<T>(key);
-      this.l1.set(key, v);
-      this.hits++;
-      if (category !== 'other') {
-        this.categoryHits[category]++;
-      }
-      return v as T;
+    this.recordMiss(key);
+    const result = factory();
+    if (result instanceof Promise) {
+      return result.then((v) => {
+        this.set(key, v, opts);
+        return v;
+      });
     }
-    // 未命中，调用 factory
-    this.misses++;
-    if (category !== 'other') {
-      this.categoryMisses[category]++;
-    }
-    try {
-      const result = factory();
-      if (result instanceof Promise) {
-        return result.then((v) => {
-          this.set(key, v, opts);
-          return v;
-        });
-      }
-      this.set(key, result, opts);
-      return result;
-    } catch (err) {
-      throw err;
-    }
+    this.set(key, result, opts);
+    return result;
   }
 }

@@ -716,6 +716,274 @@ describe('类型导出', () => {
   });
 });
 
+// ==================== 边界情况测试 ====================
+
+describe('边界情况', () => {
+  let tracer: TracingManager;
+
+  beforeEach(() => {
+    tracer = new TracingManager();
+  });
+
+  describe('maxSpans 边界', () => {
+    it('maxSpans 为 0 时自动提升为 1', () => {
+      const t = new TracingManager({ maxSpans: 0 });
+      const s1 = t.startSpan('a');
+      const s2 = t.startSpan('b');
+      expect(t.spanCount()).toBe(1);
+      expect(t.getSpan(s1.spanId)).toBeUndefined();
+      expect(t.getSpan(s2.spanId)).toBeDefined();
+    });
+
+    it('maxSpans 为负数时自动提升为 1', () => {
+      const t = new TracingManager({ maxSpans: -5 });
+      const s1 = t.startSpan('a');
+      const s2 = t.startSpan('b');
+      expect(t.spanCount()).toBe(1);
+      expect(t.getSpan(s1.spanId)).toBeUndefined();
+      expect(t.getSpan(s2.spanId)).toBeDefined();
+    });
+
+    it('maxSpans 为 1 时只保留最新 span', () => {
+      const t = new TracingManager({ maxSpans: 1 });
+      const s1 = t.startSpan('a');
+      expect(t.spanCount()).toBe(1);
+      const s2 = t.startSpan('b');
+      expect(t.spanCount()).toBe(1);
+      expect(t.getSpan(s1.spanId)).toBeUndefined();
+      expect(t.getSpan(s2.spanId)).toBeDefined();
+    });
+
+    it('evict 时同步清理活动栈中的 span', () => {
+      const t = new TracingManager({ maxSpans: 2 });
+      const s1 = t.startSpan('a');
+      const s2 = t.startSpan('b');
+      expect(t.activeSpanCount()).toBe(2);
+      const s3 = t.startSpan('c');
+      expect(t.spanCount()).toBe(2);
+      expect(t.activeSpanCount()).toBe(2);
+      expect(t.getSpan(s1.spanId)).toBeUndefined();
+    });
+
+    it('evict 最后一个 span 时清理 traceIndex', () => {
+      const t = new TracingManager({ maxSpans: 1 });
+      const s1 = t.startSpan('a', { parentSpanId: null });
+      expect(t.traceCount()).toBe(1);
+      t.startSpan('b', { parentSpanId: null });
+      expect(t.traceCount()).toBe(1);
+      expect(t.getSpansByTrace(s1.traceId)).toHaveLength(0);
+    });
+  });
+
+  describe('setError 边界', () => {
+    it('对已 completed 的 span 调用 setError 会更新状态', () => {
+      const span = tracer.startSpan('op');
+      tracer.endSpan(span);
+      expect(span.status).toBe('completed');
+      tracer.setError(span, 'late error');
+      expect(span.status).toBe('error');
+      expect(span.error).toBe('late error');
+    });
+
+    it('对已 error 的 span 调用 setError 会更新错误信息', () => {
+      const span = tracer.startSpan('op');
+      tracer.setError(span, 'first error');
+      expect(span.error).toBe('first error');
+      tracer.setError(span, 'second error');
+      expect(span.error).toBe('second error');
+    });
+
+    it('setError 接受字符串错误', () => {
+      const span = tracer.startSpan('op');
+      tracer.setError(span, 'string error');
+      expect(span.status).toBe('error');
+      expect(span.error).toBe('string error');
+    });
+
+    it('setError 接受 spanId 字符串', () => {
+      const span = tracer.startSpan('op');
+      tracer.setError(span.spanId, new Error('by id'));
+      expect(span.status).toBe('error');
+      expect(span.error).toBe('by id');
+    });
+  });
+
+  describe('endSpan 边界', () => {
+    it('endSpan 带 error 时覆盖已有的 completed 状态', () => {
+      const span = tracer.startSpan('op');
+      tracer.endSpan(span);
+      expect(span.status).toBe('completed');
+      tracer.endSpan(span, 'error after complete');
+      expect(span.status).toBe('completed');
+      expect(span.error).toBeUndefined();
+    });
+
+    it('非栈顶 span 提前结束', () => {
+      const parent = tracer.startSpan('parent');
+      const child = tracer.startSpan('child');
+      expect(tracer.activeSpanCount()).toBe(2);
+      tracer.endSpan(parent);
+      expect(tracer.activeSpanCount()).toBe(1);
+      expect(child.status).toBe('active');
+      tracer.endSpan(child);
+      expect(tracer.activeSpanCount()).toBe(0);
+    });
+
+    it('乱序结束 span', () => {
+      const s1 = tracer.startSpan('s1');
+      const s2 = tracer.startSpan('s2');
+      const s3 = tracer.startSpan('s3');
+      expect(tracer.activeSpanCount()).toBe(3);
+      tracer.endSpan(s2);
+      expect(tracer.activeSpanCount()).toBe(2);
+      tracer.endSpan(s1);
+      expect(tracer.activeSpanCount()).toBe(1);
+      tracer.endSpan(s3);
+      expect(tracer.activeSpanCount()).toBe(0);
+    });
+  });
+
+  describe('withSpan 边界', () => {
+    beforeEach(() => {
+      resetGlobalTracer();
+    });
+
+    afterEach(() => {
+      setGlobalTracer(undefined);
+    });
+
+    it('同步函数返回 undefined', () => {
+      const result = withSpan('op', () => {
+        return undefined;
+      });
+      expect(result).toBeUndefined();
+      const spans = getGlobalTracer().getAllSpans();
+      expect(spans[0].status).toBe('completed');
+    });
+
+    it('同步函数返回 null', () => {
+      const result = withSpan('op', () => null);
+      expect(result).toBeNull();
+      const spans = getGlobalTracer().getAllSpans();
+      expect(spans[0].status).toBe('completed');
+    });
+
+    it('同步函数抛出字符串异常', () => {
+      expect(() =>
+        withSpan('op', () => {
+          throw 'string error';
+        }),
+      ).toThrow('string error');
+      const spans = getGlobalTracer().getAllSpans();
+      expect(spans[0].status).toBe('error');
+      expect(spans[0].error).toBe('string error');
+    });
+
+    it('异步函数返回 undefined', async () => {
+      const result = await withSpan('op', async () => {
+        return undefined;
+      });
+      expect(result).toBeUndefined();
+      const spans = getGlobalTracer().getAllSpans();
+      expect(spans[0].status).toBe('completed');
+    });
+
+    it('异步函数抛出字符串异常', async () => {
+      await expect(
+        withSpan('op', async () => {
+          throw 'async string error';
+        }),
+      ).rejects.toBe('async string error');
+      const spans = getGlobalTracer().getAllSpans();
+      expect(spans[0].status).toBe('error');
+      expect(spans[0].error).toBe('async string error');
+    });
+  });
+
+  describe('其他边界', () => {
+    it('空字符串 span 名称', () => {
+      const span = tracer.startSpan('');
+      expect(span.name).toBe('');
+      expect(span.status).toBe('active');
+    });
+
+    it('attributes 包含各种类型值', () => {
+      const span = tracer.startSpan('op', {
+        attributes: {
+          num: 42,
+          str: 'hello',
+          bool: true,
+          nullVal: null,
+          arr: [1, 2, 3],
+          obj: { nested: true },
+        },
+      });
+      expect(span.attributes?.num).toBe(42);
+      expect(span.attributes?.str).toBe('hello');
+      expect(span.attributes?.bool).toBe(true);
+      expect(span.attributes?.nullVal).toBeNull();
+      expect(span.attributes?.arr).toEqual([1, 2, 3]);
+      expect(span.attributes?.obj).toEqual({ nested: true });
+    });
+
+    it('setAttribute 覆盖已有属性', () => {
+      const span = tracer.startSpan('op', { attributes: { count: 1 } });
+      tracer.setAttribute(span, 'count', 2);
+      expect(span.attributes?.count).toBe(2);
+    });
+
+    it('addEvent 多个事件按时间顺序', () => {
+      let time = 100;
+      const t = new TracingManager({ nowFn: () => time });
+      const span = t.startSpan('op');
+      t.addEvent(span, 'first');
+      time = 200;
+      t.addEvent(span, 'second');
+      time = 300;
+      t.addEvent(span, 'third');
+      expect(span.events).toHaveLength(3);
+      expect(span.events![0].name).toBe('first');
+      expect(span.events![0].timestamp).toBe(100);
+      expect(span.events![1].name).toBe('second');
+      expect(span.events![1].timestamp).toBe(200);
+      expect(span.events![2].name).toBe('third');
+      expect(span.events![2].timestamp).toBe(300);
+    });
+
+    it('getAllSpans 返回副本，修改不影响内部', () => {
+      const span = tracer.startSpan('op');
+      const all = tracer.getAllSpans();
+      all[0].name = 'modified';
+      all[0].status = 'completed';
+      expect(tracer.getSpan(span.spanId)?.name).toBe('op');
+      expect(tracer.getSpan(span.spanId)?.status).toBe('active');
+    });
+
+    it('getSpansByTrace 返回副本，修改不影响内部', () => {
+      const span = tracer.startSpan('op');
+      const spans = tracer.getSpansByTrace(span.traceId);
+      spans[0].name = 'modified';
+      expect(tracer.getSpan(span.spanId)?.name).toBe('op');
+    });
+
+    it('clear 后可以重新开始', () => {
+      tracer.startSpan('a');
+      expect(tracer.spanCount()).toBe(1);
+      tracer.clear();
+      expect(tracer.spanCount()).toBe(0);
+      const span = tracer.startSpan('b');
+      expect(tracer.spanCount()).toBe(1);
+      expect(span.name).toBe('b');
+    });
+
+    it('parentSpanId 不存在时创建根 span', () => {
+      const span = tracer.startSpan('child', { parentSpanId: 'nonexistent' });
+      expect(span.parentSpanId).toBeUndefined();
+      expect(span.traceId).toBeTruthy();
+    });
+  });
+});
+
 // ==================== vi 清理 ====================
 
 describe('清理', () => {

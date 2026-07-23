@@ -6,6 +6,10 @@ import {
   FeedbackStore,
   loadIgnoreConfig,
   shouldIgnore,
+  markFalsePositive,
+  getRuleEffectiveness,
+  autoTuneRules,
+  DEFAULT_FALSE_POSITIVE_REASON,
   type FeedbackAction,
   type FeedbackRecord,
   type FeedbackStats,
@@ -667,5 +671,288 @@ describe('反馈模块类型导出', () => {
   it('IgnoreRule 接口字段可选', () => {
     const rule: IgnoreRule = {};
     expect(rule).toBeDefined();
+  });
+});
+
+// ==================== 边界情况测试 ====================
+
+describe('边界情况测试', () => {
+  describe('FeedbackStore 边界情况', () => {
+    let store: FeedbackStore;
+
+    beforeEach(() => {
+      store = new FeedbackStore();
+    });
+
+    it('recordFeedback 对空字符串 findingId 抛出错误', () => {
+      expect(() => store.recordFeedback('', 'accept')).toThrow('findingId must be a non-empty string');
+    });
+
+    it('recordFeedback 对仅含空白字符的 findingId 抛出错误', () => {
+      expect(() => store.recordFeedback('   ', 'accept')).toThrow('findingId must be a non-empty string');
+      expect(() => store.recordFeedback('\t\n', 'accept')).toThrow('findingId must be a non-empty string');
+    });
+
+    it('recordFeedback 对非字符串 findingId 抛出错误', () => {
+      expect(() => store.recordFeedback(null as unknown as string, 'accept')).toThrow();
+      expect(() => store.recordFeedback(undefined as unknown as string, 'accept')).toThrow();
+      expect(() => store.recordFeedback(123 as unknown as string, 'accept')).toThrow();
+    });
+
+    it('recordFeedback 对非法 action 抛出错误', () => {
+      expect(() => store.recordFeedback('f1', 'invalid' as FeedbackAction)).toThrow('invalid feedback action');
+    });
+
+    it('getFeedbackByFinding 对空字符串返回空数组', () => {
+      expect(store.getFeedbackByFinding('')).toEqual([]);
+    });
+
+    it('getFeedbackByAction 对非法 action 返回空数组', () => {
+      store.recordFeedback('f1', 'accept');
+      expect(store.getFeedbackByAction('invalid' as FeedbackAction)).toEqual([]);
+    });
+
+    it('size 在清空后返回 0', () => {
+      store.recordFeedback('f1', 'accept');
+      store.recordFeedback('f2', 'reject');
+      expect(store.size()).toBe(2);
+      store.clear();
+      expect(store.size()).toBe(0);
+    });
+
+    it('多次 clear 不报错', () => {
+      store.clear();
+      store.clear();
+      expect(store.size()).toBe(0);
+    });
+
+    it('recordFeedback 返回的记录是深拷贝，修改不影响内部存储', () => {
+      const rec = store.recordFeedback('f1', 'accept', undefined, makeFinding({ category: 'security' }));
+      rec.action = 'reject';
+      rec.category = 'changed';
+      const stored = store.getFeedbackByFinding('f1')[0];
+      expect(stored.action).toBe('accept');
+      expect(stored.category).toBe('security');
+    });
+
+    it('getAllFeedback 返回的记录是深拷贝，修改不影响内部存储', () => {
+      store.recordFeedback('f1', 'accept');
+      const all = store.getAllFeedback();
+      all[0].action = 'reject';
+      const stored = store.getFeedbackByFinding('f1')[0];
+      expect(stored.action).toBe('accept');
+    });
+
+    it('getFeedbackByAction 返回的记录是深拷贝', () => {
+      store.recordFeedback('f1', 'accept');
+      const list = store.getFeedbackByAction('accept');
+      list[0].action = 'reject';
+      const stored = store.getFeedbackByFinding('f1')[0];
+      expect(stored.action).toBe('accept');
+    });
+  });
+
+  describe('shouldIgnore 边界情况', () => {
+    it('finding 为 null 时返回 false', () => {
+      const cfg: IgnoreConfig = { rules: [{ category: 'security' }] };
+      expect(shouldIgnore(null, cfg)).toBe(false);
+    });
+
+    it('finding 为 undefined 时返回 false', () => {
+      const cfg: IgnoreConfig = { rules: [{ category: 'security' }] };
+      expect(shouldIgnore(undefined, cfg)).toBe(false);
+    });
+
+    it('ignoreConfig 为 null 时返回 false', () => {
+      expect(shouldIgnore(makeFinding(), null)).toBe(false);
+    });
+
+    it('ignoreConfig 为 undefined 时返回 false', () => {
+      expect(shouldIgnore(makeFinding(), undefined)).toBe(false);
+    });
+
+    it('ignoreConfig.rules 为 undefined 时返回 false', () => {
+      expect(shouldIgnore(makeFinding(), {} as IgnoreConfig)).toBe(false);
+    });
+  });
+
+  describe('loadIgnoreConfig 边界情况', () => {
+    let dir: string;
+
+    beforeEach(() => {
+      dir = mkdtempSync(join(tmpdir(), 'ignore-cfg-boundary-'));
+    });
+
+    afterEach(() => {
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('空字符串路径抛出错误', () => {
+      expect(() => loadIgnoreConfig('')).toThrow();
+    });
+
+    it('仅空白字符路径抛出错误', () => {
+      expect(() => loadIgnoreConfig('   ')).toThrow();
+    });
+
+    it('空文件解析为空 rules', () => {
+      const file = join(dir, 'empty.yaml');
+      writeFileSync(file, '', 'utf8');
+      const cfg = loadIgnoreConfig(file);
+      expect(cfg.rules).toEqual([]);
+    });
+
+    it('仅有注释的文件解析为空 rules', () => {
+      const file = join(dir, 'comments-only.yaml');
+      writeFileSync(file, '# just a comment\n# another comment\n', 'utf8');
+      const cfg = loadIgnoreConfig(file);
+      expect(cfg.rules).toEqual([]);
+    });
+  });
+
+  describe('误报分析边界情况', () => {
+    let store: FeedbackStore;
+
+    beforeEach(() => {
+      store = new FeedbackStore();
+    });
+
+    it('恰好 99 条反馈不启用分析', () => {
+      for (let i = 0; i < 99; i++) {
+        store.recordFeedback(`f-${i}`, 'reject', undefined, makeFinding({ category: 'security', ruleId: 'r1' }));
+      }
+      expect(store.analyzeFalsePositivePatterns()).toEqual([]);
+      expect(store.generateRuleSuggestions()).toEqual([]);
+    });
+
+    it('恰好 100 条反馈启用分析', () => {
+      for (let i = 0; i < 100; i++) {
+        store.recordFeedback(`f-${i}`, 'reject', undefined, makeFinding({ category: 'security', ruleId: 'r1' }));
+      }
+      const patterns = store.analyzeFalsePositivePatterns();
+      expect(patterns.length).toBeGreaterThan(0);
+    });
+
+    it('generateRuleSuggestions 空数据返回空数组', () => {
+      expect(store.generateRuleSuggestions()).toEqual([]);
+    });
+
+    it('优先级边界值：count 为 10 时是 high', () => {
+      for (let i = 0; i < 10; i++) {
+        store.recordFeedback(`h-${i}`, 'reject', undefined, makeFinding({ category: 'security', ruleId: 'r-high' }));
+      }
+      for (let i = 0; i < 90; i++) {
+        store.recordFeedback(`o-${i}`, 'reject', undefined, makeFinding({ category: 'other', ruleId: 'r-other' }));
+      }
+      const suggestions = store.generateRuleSuggestions();
+      const high = suggestions.find((s) => s.pattern.includes('r-high'));
+      expect(high?.priority).toBe('high');
+    });
+
+    it('优先级边界值：count 为 9 时是 medium', () => {
+      for (let i = 0; i < 9; i++) {
+        store.recordFeedback(`m-${i}`, 'reject', undefined, makeFinding({ category: 'security', ruleId: 'r-med' }));
+      }
+      for (let i = 0; i < 91; i++) {
+        store.recordFeedback(`o-${i}`, 'reject', undefined, makeFinding({ category: 'other', ruleId: 'r-other' }));
+      }
+      const suggestions = store.generateRuleSuggestions();
+      const med = suggestions.find((s) => s.pattern.includes('r-med'));
+      expect(med?.priority).toBe('medium');
+    });
+
+    it('优先级边界值：count 为 5 时是 medium', () => {
+      for (let i = 0; i < 5; i++) {
+        store.recordFeedback(`m-${i}`, 'reject', undefined, makeFinding({ category: 'security', ruleId: 'r-med' }));
+      }
+      for (let i = 0; i < 95; i++) {
+        store.recordFeedback(`o-${i}`, 'reject', undefined, makeFinding({ category: 'other', ruleId: 'r-other' }));
+      }
+      const suggestions = store.generateRuleSuggestions();
+      const med = suggestions.find((s) => s.pattern.includes('r-med'));
+      expect(med?.priority).toBe('medium');
+    });
+
+    it('优先级边界值：count 为 4 时是 low', () => {
+      for (let i = 0; i < 4; i++) {
+        store.recordFeedback(`l-${i}`, 'reject', undefined, makeFinding({ category: 'security', ruleId: 'r-low' }));
+      }
+      for (let i = 0; i < 96; i++) {
+        store.recordFeedback(`o-${i}`, 'reject', undefined, makeFinding({ category: 'other', ruleId: 'r-other' }));
+      }
+      const suggestions = store.generateRuleSuggestions();
+      const low = suggestions.find((s) => s.pattern.includes('r-low'));
+      expect(low?.priority).toBe('low');
+    });
+  });
+
+  describe('getRuleEffectiveness 边界情况', () => {
+    it('空 store 返回空数组', () => {
+      const store = new FeedbackStore();
+      expect(getRuleEffectiveness(store)).toEqual([]);
+    });
+
+    it('没有 ruleId 的反馈不参与统计', () => {
+      const store = new FeedbackStore();
+      store.recordFeedback('f1', 'accept', undefined, makeFinding({ ruleId: undefined }));
+      store.recordFeedback('f2', 'reject', undefined, makeFinding({ ruleId: undefined }));
+      expect(getRuleEffectiveness(store)).toEqual([]);
+    });
+  });
+
+  describe('autoTuneRules 边界情况', () => {
+    it('空 store 返回空数组', () => {
+      const store = new FeedbackStore();
+      expect(autoTuneRules(store, [])).toEqual([]);
+    });
+
+    it('good 等级规则不生成建议', () => {
+      const store = new FeedbackStore();
+      for (let i = 0; i < 10; i++) {
+        store.recordFeedback(`f-${i}`, 'accept', undefined, makeFinding({ ruleId: 'good-rule' }));
+      }
+      const suggestions = autoTuneRules(store, [{ id: 'good-rule', name: 'Good', severity: 'high', category: 'test', patterns: [] }]);
+      expect(suggestions).toHaveLength(0);
+    });
+  });
+
+  describe('markFalsePositive 边界情况', () => {
+    it('不传 reason 时使用默认原因', () => {
+      const store = new FeedbackStore();
+      const result = markFalsePositive(store, 'f1', makeFinding());
+      expect(result.reason).toBe(DEFAULT_FALSE_POSITIVE_REASON);
+    });
+
+    it('不传 finding 时 ignoreRule 为 undefined', () => {
+      const store = new FeedbackStore();
+      const result = markFalsePositive(store, 'f1');
+      expect(result.ignoreRule).toBeUndefined();
+    });
+
+    it('传 finding 时生成包含各字段的 ignoreRule', () => {
+      const store = new FeedbackStore();
+      const finding = makeFinding({ category: 'security', ruleId: 'r1', file: 'src/test.ts', severity: 'high' });
+      const result = markFalsePositive(store, 'f1', finding);
+      expect(result.ignoreRule).toBeDefined();
+      expect(result.ignoreRule?.category).toBe('security');
+      expect(result.ignoreRule?.ruleId).toBe('r1');
+      expect(result.ignoreRule?.filePattern).toBe('src/test.ts');
+      expect(result.ignoreRule?.severity).toBe('high');
+    });
+
+    it('finding.file 为空字符串时不设置 filePattern', () => {
+      const store = new FeedbackStore();
+      const finding = makeFinding({ file: '' });
+      const result = markFalsePositive(store, 'f1', finding);
+      expect(result.ignoreRule?.filePattern).toBeUndefined();
+    });
+
+    it('返回结果包含 record 引用', () => {
+      const store = new FeedbackStore();
+      const result = markFalsePositive(store, 'f1', makeFinding());
+      expect(result.record).toBeDefined();
+      expect(result.record.findingId).toBe('f1');
+      expect(result.record.action).toBe('reject');
+    });
   });
 });

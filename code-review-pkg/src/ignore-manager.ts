@@ -59,6 +59,13 @@ export function loadIgnoreConfig(configPath: string): IgnoreConfig {
   return parseIgnoreContent(text, configPath);
 }
 
+function unescapePattern(pattern: string): string {
+  if (pattern.startsWith('\\#') || pattern.startsWith('\\!')) {
+    return pattern.substring(1);
+  }
+  return pattern;
+}
+
 /**
  * 解析 `.reviewignore` 文本内容为 IgnoreConfig。
  *
@@ -86,21 +93,11 @@ export function parseIgnoreContent(text: string, source?: string): IgnoreConfig 
       negate = true;
       pattern = pattern.substring(1);
     }
-    // 转义 `\#` → `#`（与 .gitignore 一致）
-    if (pattern.startsWith('\\#')) {
-      pattern = pattern.substring(1);
-    }
-    // 处理 `\!` → `!`（避免被识别为取反前缀）
-    if (pattern.startsWith('\\!')) {
-      pattern = pattern.substring(1);
-    }
+    pattern = unescapePattern(pattern);
     if (pattern === '') continue;
 
-    // 规范化：去除尾部 /（目录标记），由 regex 编译时处理目录语义
-    let normalizedPattern = pattern;
-    if (normalizedPattern.endsWith('/') && normalizedPattern.length > 1) {
-      normalizedPattern = normalizedPattern.slice(0, -1);
-    }
+    const isDir = pattern.endsWith('/') && pattern.length > 1;
+    const normalizedPattern = isDir ? pattern.slice(0, -1) : pattern;
 
     patterns.push({
       pattern: normalizedPattern,
@@ -109,6 +106,16 @@ export function parseIgnoreContent(text: string, source?: string): IgnoreConfig 
     });
   }
   return { patterns, source };
+}
+
+function buildPatternRegex(fullPattern: string, allowSuffix: boolean): RegExp {
+  const base = globToRegex(fullPattern);
+  if (!allowSuffix) return base;
+  const src = base.source;
+  if (src.startsWith('^') && src.endsWith('$')) {
+    return new RegExp(src.slice(0, -1) + '(/.*)?$');
+  }
+  return base;
 }
 
 /**
@@ -128,22 +135,19 @@ export function parseIgnoreContent(text: string, source?: string): IgnoreConfig 
 function compileIgnoreRegex(pattern: string): RegExp {
   let p = pattern;
 
-  let isDirectory = false;
-  if (p.endsWith('/')) {
-    isDirectory = true;
+  const isDirectory = p.endsWith('/');
+  if (isDirectory) {
     p = p.slice(0, -1);
   }
 
-  let anchored = false;
-  if (p.startsWith('/')) {
-    anchored = true;
+  const anchored = p.startsWith('/');
+  if (anchored) {
     p = p.slice(1);
   }
 
   if (p === '') return /^$/;
 
   let fullPattern = p;
-  // 不含 / 且未锚定时，前置双星号前缀匹配任意路径层级
   if (!anchored && !p.includes('/')) {
     fullPattern = `**/${p}`;
   }
@@ -151,15 +155,22 @@ function compileIgnoreRegex(pattern: string): RegExp {
     fullPattern = `${fullPattern}/**`;
     return globToRegex(fullPattern);
   }
-  // 非目录模式：允许匹配 entry 本身或 entry 内的文件
-  // 例如 /build 既能匹配 build，也能匹配 build/output.js
-  // 通过修改正则尾部：将 ...$ 改为 ...(/.*)?$ 实现
-  const base = globToRegex(fullPattern);
-  const src = base.source;
-  if (src.startsWith('^') && src.endsWith('$')) {
-    return new RegExp(src.slice(0, -1) + '(/.*)?$');
+  return buildPatternRegex(fullPattern, true);
+}
+
+function hasPatterns(config: IgnoreConfig | null | undefined): boolean {
+  return !!config?.patterns && config.patterns.length > 0;
+}
+
+function normalizeFilePath(filePath: string): string {
+  let p = filePath;
+  while (p.startsWith('/')) {
+    p = p.substring(1);
   }
-  return base;
+  while (p.endsWith('/') && p.length > 0) {
+    p = p.slice(0, -1);
+  }
+  return p;
 }
 
 /**
@@ -176,11 +187,13 @@ function compileIgnoreRegex(pattern: string): RegExp {
  * @returns true 表示应忽略
  */
 export function shouldIgnore(filePath: string, config: IgnoreConfig): boolean {
-  if (!config?.patterns || config.patterns.length === 0) return false;
+  if (!hasPatterns(config)) return false;
   if (typeof filePath !== 'string' || filePath === '') return false;
+  const normalizedPath = normalizeFilePath(filePath);
+  if (normalizedPath === '') return false;
   let ignored = false;
   for (const pattern of config.patterns) {
-    if (pattern.regex.test(filePath)) {
+    if (pattern.regex.test(normalizedPath)) {
       ignored = !pattern.negate;
     }
   }
@@ -201,7 +214,7 @@ export function applyIgnoreRules<F extends { file: string }>(
   findings: F[],
   config: IgnoreConfig,
 ): F[] {
-  if (!config?.patterns || config.patterns.length === 0) return findings;
+  if (!hasPatterns(config)) return findings;
   if (!Array.isArray(findings) || findings.length === 0) return findings;
   return findings.filter((f) => !shouldIgnore(f.file, config));
 }

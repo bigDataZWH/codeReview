@@ -1,8 +1,90 @@
-import type { FileDiff, DiffLine } from './types.js';
+import type { FileDiff, DiffLine, Hunk } from './types.js';
 
-/**
- * 将 unified diff 文本解析为 FileDiff[]。
- */
+const ANSI_ESCAPE_RE = /\x1b\[[0-9;]*[a-zA-Z]/g;
+
+const RE_DIFF_GIT = /^diff --git a\/(.+?) b\/(.+)$/;
+const RE_DIFF_CC = /^diff --cc |^diff --combined /;
+const RE_NEW_FILE = /^new file/;
+const RE_DELETED_FILE = /^deleted file/;
+const RE_RENAME = /^rename (?:to|from) (.+)$/;
+const RE_BINARY = /^Binary files/;
+const RE_OLD_MODE = /^old mode (\d+)$/;
+const RE_NEW_MODE = /^new mode (\d+)$/;
+const RE_SIMILARITY = /^similarity index (\d+)%$/;
+const RE_DISSIMILARITY = /^dissimilarity index (\d+)%$/;
+const RE_COPY_FROM = /^copy from (.+)$/;
+const RE_COPY_TO = /^copy to (.+)$/;
+const RE_FILE_HEADER = /^(---|\+\+\+) (.+)$/;
+const RE_HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@\s*(.*)/;
+
+function filterLinesByType(hunk: Hunk, type: DiffLine['type']): DiffLine[] {
+  return hunk.lines.filter((l) => l.type === type);
+}
+
+function countLinesByType(diff: FileDiff, type: 'add' | 'delete'): number {
+  let count = 0;
+  for (const hunk of diff.hunks) {
+    for (const line of hunk.lines) {
+      if (line.type === type) count++;
+    }
+  }
+  return count;
+}
+
+function computeLineNumbers(hunks: Hunk[]): void {
+  for (const hunk of hunks) {
+    let oldLine = hunk.oldStart;
+    let newLine = hunk.newStart;
+    for (const dl of hunk.lines) {
+      if (dl.type === 'context') {
+        dl.oldLineNumber = oldLine;
+        dl.newLineNumber = newLine;
+        oldLine++;
+        newLine++;
+      } else if (dl.type === 'delete') {
+        dl.oldLineNumber = oldLine;
+        oldLine++;
+      } else if (dl.type === 'add') {
+        dl.newLineNumber = newLine;
+        newLine++;
+      }
+    }
+  }
+}
+
+function createFileDiff(path: string): FileDiff {
+  return {
+    path,
+    status: 'modified',
+    hunks: [],
+  };
+}
+
+function createHunk(match: RegExpMatchArray): Hunk {
+  return {
+    oldStart: parseInt(match[1], 10),
+    oldCount: match[2] ? parseInt(match[2], 10) : 1,
+    newStart: parseInt(match[3], 10),
+    newCount: match[4] ? parseInt(match[4], 10) : 1,
+    header: match[5] ?? '',
+    lines: [],
+  };
+}
+
+function skipCombinedDiff(lines: string[], i: number): number {
+  i++;
+  while (i < lines.length && !lines[i].startsWith('diff --git ')) {
+    i++;
+  }
+  return i;
+}
+
+function finalizeDiff(diff: FileDiff): void {
+  if (diff.oldPath && diff.path !== diff.oldPath) {
+    diff.status = 'renamed';
+  }
+}
+
 export function parseDiff(diffText: string): FileDiff[] {
   if (!diffText || diffText.trim() === '') {
     return [];
@@ -16,49 +98,40 @@ export function parseDiff(diffText: string): FileDiff[] {
   while (i < lines.length) {
     const line = lines[i];
 
-    // 防御性跳过 combined diff (git diff --cc) 和 merge conflict format
-    if (line.match(/^diff --cc /) || line.match(/^diff --combined /)) {
-      // Skip until next diff --git or end
-      i++;
-      while (i < lines.length && !lines[i].match(/^diff --git /)) {
-        i++;
-      }
+    if (RE_DIFF_CC.test(line)) {
+      i = skipCombinedDiff(lines, i);
       continue;
     }
 
-    // diff --git a/path b/path
-    const gitMatch = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
+    const gitMatch = line.match(RE_DIFF_GIT);
     if (gitMatch) {
       if (currentDiff) {
         diffs.push(currentDiff);
       }
-      const newPath = gitMatch[2];
-      currentDiff = {
-        path: newPath,
-        status: 'modified',
-        hunks: [],
-      };
+      currentDiff = createFileDiff(gitMatch[2]);
       i++;
       continue;
     }
 
-    // new file
-    if (line.match(/^new file/)) {
-      if (currentDiff) currentDiff.status = 'added';
+    if (!currentDiff) {
       i++;
       continue;
     }
 
-    // deleted file
-    if (line.match(/^deleted file/)) {
-      if (currentDiff) currentDiff.status = 'deleted';
+    if (RE_NEW_FILE.test(line)) {
+      currentDiff.status = 'added';
       i++;
       continue;
     }
 
-    // rename / copy — 防御多行路径（极端情况）
-    const renameMatch = line.match(/^rename (?:to|from) (.+)$/);
-    if (renameMatch && currentDiff) {
+    if (RE_DELETED_FILE.test(line)) {
+      currentDiff.status = 'deleted';
+      i++;
+      continue;
+    }
+
+    const renameMatch = line.match(RE_RENAME);
+    if (renameMatch) {
       if (line.startsWith('rename from')) {
         currentDiff.oldPath = renameMatch[1];
       }
@@ -66,86 +139,66 @@ export function parseDiff(diffText: string): FileDiff[] {
       continue;
     }
 
-    // binary file
-    if (line.match(/^Binary files/)) {
-      if (currentDiff) currentDiff.binary = true;
+    if (RE_BINARY.test(line)) {
+      currentDiff.binary = true;
       i++;
       continue;
     }
 
-    // old mode / new mode
-    const oldModeMatch = line.match(/^old mode (\d+)$/);
-    if (oldModeMatch && currentDiff) {
+    const oldModeMatch = line.match(RE_OLD_MODE);
+    if (oldModeMatch) {
       currentDiff.oldMode = oldModeMatch[1];
       i++;
       continue;
     }
-    const newModeMatch = line.match(/^new mode (\d+)$/);
-    if (newModeMatch && currentDiff) {
+
+    const newModeMatch = line.match(RE_NEW_MODE);
+    if (newModeMatch) {
       currentDiff.newMode = newModeMatch[1];
       i++;
       continue;
     }
 
-    // similarity index
-    const similarityMatch = line.match(/^similarity index (\d+)%$/);
-    if (similarityMatch && currentDiff) {
+    const similarityMatch = line.match(RE_SIMILARITY);
+    if (similarityMatch) {
       currentDiff.similarity = parseInt(similarityMatch[1], 10);
       i++;
       continue;
     }
 
-    // dissimilarity index (rename with changes)
-    const dissimilarityMatch = line.match(/^dissimilarity index (\d+)%$/);
-    if (dissimilarityMatch && currentDiff) {
+    const dissimilarityMatch = line.match(RE_DISSIMILARITY);
+    if (dissimilarityMatch) {
       currentDiff.similarity = 100 - parseInt(dissimilarityMatch[1], 10);
       i++;
       continue;
     }
 
-    // copy from/to (Git copy detection)
-    const copyFromMatch = line.match(/^copy from (.+)$/);
-    if (copyFromMatch && currentDiff) {
+    const copyFromMatch = line.match(RE_COPY_FROM);
+    if (copyFromMatch) {
       currentDiff.oldPath = copyFromMatch[1];
       currentDiff.copied = true;
       i++;
       continue;
     }
-    const copyToMatch = line.match(/^copy to (.+)$/);
-    if (copyToMatch && currentDiff) {
+
+    if (RE_COPY_TO.test(line)) {
       i++;
       continue;
     }
 
-    // --- a/path and +++ b/path — skip file header lines (including /dev/null)
-    // Match lines starting with exactly "--- " or "+++ " where the content looks like a file path
-    const filePathHeader = line.match(/^(---|\+\+\+) (.+)$/);
-    if (filePathHeader && currentDiff) {
-      // If not inside a hunk, these are file headers, skip them
-      if (currentDiff.hunks.length === 0) {
-        i++;
-        continue;
-      }
-    }
-
-    // hunk header @@ -oldStart,oldCount +newStart,newCount @@ context
-    const hunkMatch = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@\s*(.*)/);
-    if (hunkMatch && currentDiff) {
-      const hunk = {
-        oldStart: parseInt(hunkMatch[1], 10),
-        oldCount: hunkMatch[2] ? parseInt(hunkMatch[2], 10) : 1,
-        newStart: parseInt(hunkMatch[3], 10),
-        newCount: hunkMatch[4] ? parseInt(hunkMatch[4], 10) : 1,
-        header: hunkMatch[5] ?? '',
-        lines: [] as import('./types.js').DiffLine[],
-      };
-      currentDiff.hunks.push(hunk);
+    if (RE_FILE_HEADER.test(line) && currentDiff.hunks.length === 0) {
       i++;
       continue;
     }
 
-    // diff content lines
-    if (currentDiff && currentDiff.hunks.length > 0) {
+    const hunkMatch = line.match(RE_HUNK_HEADER);
+    if (hunkMatch) {
+      currentDiff.hunks.push(createHunk(hunkMatch));
+      i++;
+      continue;
+    }
+
+    if (currentDiff.hunks.length > 0) {
       const hunk = currentDiff.hunks[currentDiff.hunks.length - 1];
       if (line.startsWith('+')) {
         hunk.lines.push({ type: 'add', content: line.substring(1) });
@@ -153,8 +206,6 @@ export function parseDiff(diffText: string): FileDiff[] {
         hunk.lines.push({ type: 'delete', content: line.substring(1) });
       } else if (line.startsWith(' ') || line === '') {
         hunk.lines.push({ type: 'context', content: line.substring(1) });
-      } else if (line.startsWith('\\')) {
-        // "No newline at end of file" - skip
       }
     }
 
@@ -162,40 +213,17 @@ export function parseDiff(diffText: string): FileDiff[] {
   }
 
   if (currentDiff) {
-    if (currentDiff.oldPath && currentDiff.path !== currentDiff.oldPath) {
-      currentDiff.status = 'renamed';
-    }
+    finalizeDiff(currentDiff);
     diffs.push(currentDiff);
   }
 
-  // Post-process: compute line numbers for each hunk
   for (const fileDiff of diffs) {
-    for (const hunk of fileDiff.hunks) {
-      let oldLine = hunk.oldStart;
-      let newLine = hunk.newStart;
-      for (const dl of hunk.lines) {
-        if (dl.type === 'context') {
-          dl.oldLineNumber = oldLine;
-          dl.newLineNumber = newLine;
-          oldLine++;
-          newLine++;
-        } else if (dl.type === 'delete') {
-          dl.oldLineNumber = oldLine;
-          oldLine++;
-        } else if (dl.type === 'add') {
-          dl.newLineNumber = newLine;
-          newLine++;
-        }
-      }
-    }
+    computeLineNumbers(fileDiff.hunks);
   }
 
   return diffs;
 }
 
-/**
- * 通过调用 git diff 命令获取 diff 并解析。
- */
 export async function parseDiffFromGit(options: {
   from?: string;
   to?: string;
@@ -221,22 +249,14 @@ export async function parseDiffFromGit(options: {
   return parseDiff(stdout);
 }
 
-/**
- * 获取 hunk 中的上下文行（type 为 'context' 的行）。
- * @param hunk - 目标 hunk
- * @param contextLines - 最多返回多少行上下文，默认返回全部
- */
-export function getHunkContext(hunk: import('./types.js').Hunk, contextLines?: number): import('./types.js').DiffLine[] {
-  const contextLinesList = hunk.lines.filter((l) => l.type === 'context');
+export function getHunkContext(hunk: Hunk, contextLines?: number): DiffLine[] {
+  const contextLinesList = filterLinesByType(hunk, 'context');
   if (contextLines === undefined) {
     return contextLinesList;
   }
   return contextLinesList.slice(0, contextLines);
 }
 
-/**
- * 计算 diff 统计信息。
- */
 export function computeDiffStats(diffs: FileDiff[]): {
   filesChanged: number;
   insertions: number;
@@ -247,12 +267,8 @@ export function computeDiffStats(diffs: FileDiff[]): {
   let deletions = 0;
 
   for (const diff of diffs) {
-    for (const hunk of diff.hunks) {
-      for (const line of hunk.lines) {
-        if (line.type === 'add') insertions++;
-        else if (line.type === 'delete') deletions++;
-      }
-    }
+    insertions += countLinesByType(diff, 'add');
+    deletions += countLinesByType(diff, 'delete');
   }
 
   return {
@@ -263,37 +279,32 @@ export function computeDiffStats(diffs: FileDiff[]): {
   };
 }
 
-/**
- * 获取变更文件列表，返回简单的 {path, status}[]。
- */
 export function getChangedFiles(diffs: FileDiff[]): { path: string; status: string }[] {
   return diffs.map((d) => ({ path: d.path, status: d.status }));
 }
 
-/**
- * 获取 diff 中所有新增行。
- */
 export function getAdditions(diff: FileDiff): DiffLine[] {
   const result: DiffLine[] = [];
   for (const hunk of diff.hunks) {
-    for (const line of hunk.lines) {
-      if (line.type === 'add') result.push(line);
-    }
+    result.push(...filterLinesByType(hunk, 'add'));
   }
   return result;
 }
 
-/**
- * 解析 `git diff --stat` 输出。
- * 返回 { path, insertions, deletions } 数组。
- */
+export function getDeletions(diff: FileDiff): DiffLine[] {
+  const result: DiffLine[] = [];
+  for (const hunk of diff.hunks) {
+    result.push(...filterLinesByType(hunk, 'delete'));
+  }
+  return result;
+}
+
 export function parseDiffStat(statText: string): { path: string; insertions: number; deletions: number }[] {
   if (!statText || statText.trim() === '') return [];
   const results: { path: string; insertions: number; deletions: number }[] = [];
   const lines = statText.trim().split('\n');
 
   for (const line of lines) {
-    // Match patterns like: src/file.ts | 10 +++++-----  or  src/other.js |  3 ++-
     const match = line.match(/^\s*(.+?)\s*\|\s*(\d+)\s*([+-]+)?\s*$/);
     if (match) {
       const path = match[1].trim();
@@ -312,28 +323,17 @@ export function parseDiffStat(statText: string): { path: string; insertions: num
   return results;
 }
 
-/**
- * 按路径模式过滤 FileDiff 数组。
- */
 export function filterDiffsByPath(diffs: FileDiff[], pathPattern: string): FileDiff[] {
   const regex = new RegExp(pathPattern);
   return diffs.filter((d) => regex.test(d.path));
 }
 
-/** ANSI 转义码正则 */
-const ANSI_ESCAPE_RE = /\x1b\[[0-9;]*[a-zA-Z]/g;
-
-/**
- * 清理文本中可能存在的 ANSI 转义码。
- */
 export function stripAnsiEscapes(text: string): string {
   return text.replace(ANSI_ESCAPE_RE, '');
 }
 
-/**
- * 判断 diff 是否仅包含空白字符变更。
- */
 export function isOnlyWhitespaceChange(diff: FileDiff): boolean {
+  if (diff.hunks.length === 0) return false;
   for (const hunk of diff.hunks) {
     for (const line of hunk.lines) {
       if (line.type === 'add' || line.type === 'delete') {
@@ -341,40 +341,22 @@ export function isOnlyWhitespaceChange(diff: FileDiff): boolean {
       }
     }
   }
-  return diff.hunks.length > 0;
+  return true;
 }
 
-/**
- * 判断 diff 是否有显著变更（变更行数超过阈值）。
- * @param diff - 文件 diff
- * @param threshold - 阈值，默认 10
- */
 export function hasSignificantChanges(diff: FileDiff, threshold: number = 10): boolean {
   let changes = 0;
   for (const hunk of diff.hunks) {
     for (const line of hunk.lines) {
-      if (line.type === 'add' || line.type === 'delete') changes++;
+      if (line.type === 'add' || line.type === 'delete') {
+        changes++;
+        if (changes > threshold) return true;
+      }
     }
   }
   return changes > threshold;
 }
 
-/**
- * 获取 diff 中所有删除行。
- */
-export function getDeletions(diff: FileDiff): DiffLine[] {
-  const result: DiffLine[] = [];
-  for (const hunk of diff.hunks) {
-    for (const line of hunk.lines) {
-      if (line.type === 'delete') result.push(line);
-    }
-  }
-  return result;
-}
-
-/**
- * 计算单个文件 diff 的字符数（所有 hunk 行内容长度之和）。
- */
 export function getPatchSize(diff: FileDiff): number {
   let total = 0;
   for (const hunk of diff.hunks) {
@@ -385,9 +367,6 @@ export function getPatchSize(diff: FileDiff): number {
   return total;
 }
 
-/**
- * 合并两个 FileDiff 数组，相同路径的文件合并 hunks。
- */
 export function mergeDiffs(diffs1: FileDiff[], diffs2: FileDiff[]): FileDiff[] {
   const result: FileDiff[] = [];
   const pathMap = new Map<string, FileDiff>();

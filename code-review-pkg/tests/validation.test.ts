@@ -75,6 +75,126 @@ describe('validateFinding', () => {
     const errors = validateFinding({});
     expect(errors.length).toBeGreaterThan(1);
   });
+
+  it('rejects empty file string', () => {
+    const errors = validateFinding({
+      file: '', line: 1, severity: 'low', category: 'c',
+      message: 'm', confidence: 0.5, source: 'rule',
+    });
+    expect(errors).toContain('file is required and must be a string');
+  });
+
+  it('rejects empty category string', () => {
+    const errors = validateFinding({
+      file: 'a.ts', line: 1, severity: 'low', category: '',
+      message: 'm', confidence: 0.5, source: 'rule',
+    });
+    expect(errors).toContain('category is required and must be a string');
+  });
+
+  it('rejects empty message string', () => {
+    const errors = validateFinding({
+      file: 'a.ts', line: 1, severity: 'low', category: 'c',
+      message: '', confidence: 0.5, source: 'rule',
+    });
+    expect(errors).toContain('message is required and must be a string');
+  });
+
+  it('rejects negative line number', () => {
+    const errors = validateFinding({
+      file: 'a.ts', line: -5, severity: 'low', category: 'c',
+      message: 'm', confidence: 0.5, source: 'rule',
+    });
+    expect(errors).toContain('line is required and must be a positive number');
+  });
+
+  it('rejects float line number', () => {
+    const errors = validateFinding({
+      file: 'a.ts', line: 1.5, severity: 'low', category: 'c',
+      message: 'm', confidence: 0.5, source: 'rule',
+    });
+    expect(errors).toContain('line is required and must be a positive number');
+  });
+
+  it('rejects NaN line', () => {
+    const errors = validateFinding({
+      file: 'a.ts', line: NaN, severity: 'low', category: 'c',
+      message: 'm', confidence: 0.5, source: 'rule',
+    });
+    expect(errors).toContain('line is required and must be a positive number');
+  });
+
+  it('rejects Infinity line', () => {
+    const errors = validateFinding({
+      file: 'a.ts', line: Infinity, severity: 'low', category: 'c',
+      message: 'm', confidence: 0.5, source: 'rule',
+    });
+    expect(errors).toContain('line is required and must be a positive number');
+  });
+
+  it('rejects NaN confidence', () => {
+    const errors = validateFinding({
+      file: 'a.ts', line: 1, severity: 'low', category: 'c',
+      message: 'm', confidence: NaN, source: 'rule',
+    });
+    expect(errors.some(e => e.includes('confidence'))).toBe(true);
+  });
+
+  it('rejects Infinity confidence', () => {
+    const errors = validateFinding({
+      file: 'a.ts', line: 1, severity: 'low', category: 'c',
+      message: 'm', confidence: Infinity, source: 'rule',
+    });
+    expect(errors.some(e => e.includes('confidence'))).toBe(true);
+  });
+
+  it('rejects negative confidence', () => {
+    const errors = validateFinding({
+      file: 'a.ts', line: 1, severity: 'low', category: 'c',
+      message: 'm', confidence: -0.1, source: 'rule',
+    });
+    expect(errors.some(e => e.includes('confidence'))).toBe(true);
+  });
+
+  it('accepts confidence exactly 0', () => {
+    const errors = validateFinding({
+      file: 'a.ts', line: 1, severity: 'low', category: 'c',
+      message: 'm', confidence: 0, source: 'rule',
+    });
+    expect(errors).toHaveLength(0);
+  });
+
+  it('accepts confidence exactly 1', () => {
+    const errors = validateFinding({
+      file: 'a.ts', line: 1, severity: 'low', category: 'c',
+      message: 'm', confidence: 1, source: 'rule',
+    });
+    expect(errors).toHaveLength(0);
+  });
+
+  it('rejects file as number type', () => {
+    const errors = validateFinding({
+      file: 123 as any, line: 1, severity: 'low', category: 'c',
+      message: 'm', confidence: 0.5, source: 'rule',
+    });
+    expect(errors).toContain('file is required and must be a string');
+  });
+
+  it('rejects category as number type', () => {
+    const errors = validateFinding({
+      file: 'a.ts', line: 1, severity: 'low', category: 123 as any,
+      message: 'm', confidence: 0.5, source: 'rule',
+    });
+    expect(errors).toContain('category is required and must be a string');
+  });
+
+  it('rejects message as object type', () => {
+    const errors = validateFinding({
+      file: 'a.ts', line: 1, severity: 'low', category: 'c',
+      message: {} as any, confidence: 0.5, source: 'rule',
+    });
+    expect(errors).toContain('message is required and must be a string');
+  });
 });
 
 describe('validatePipelineConfig', () => {
@@ -117,6 +237,64 @@ describe('validatePipelineConfig', () => {
       rules: 'not-array' as any,
     });
     expect(errors).toContain('rules must be an array');
+  });
+
+  it('detects invalid includePatterns', () => {
+    const errors = validatePipelineConfig({
+      filter: { includePatterns: 'not-array' as any },
+    });
+    expect(errors).toContain('filter.includePatterns must be an array');
+  });
+
+  it('accepts valid includePatterns array', () => {
+    const errors = validatePipelineConfig({
+      filter: { includePatterns: ['src/**/*.ts'] },
+    });
+    expect(errors).toHaveLength(0);
+  });
+
+  it('accepts valid ignorePatterns array', () => {
+    const errors = validatePipelineConfig({
+      filter: { ignorePatterns: ['*.test.ts'] },
+    });
+    expect(errors).toHaveLength(0);
+  });
+
+  it('detects NaN maxPatchLength', () => {
+    const errors = validatePipelineConfig({
+      filter: { maxPatchLength: NaN },
+    });
+    expect(errors).toContain('filter.maxPatchLength must be a non-negative number');
+  });
+
+  it('detects Infinity maxPatchLength', () => {
+    const errors = validatePipelineConfig({
+      filter: { maxPatchLength: Infinity },
+    });
+    expect(errors).toContain('filter.maxPatchLength must be a non-negative number');
+  });
+
+  it('accepts filter as empty object', () => {
+    const errors = validatePipelineConfig({
+      filter: {},
+    });
+    expect(errors).toHaveLength(0);
+  });
+
+  it('accepts rules as undefined', () => {
+    const errors = validatePipelineConfig({
+      filter: {},
+      rules: undefined,
+    });
+    expect(errors).toHaveLength(0);
+  });
+
+  it('accepts rules as empty array', () => {
+    const errors = validatePipelineConfig({
+      filter: {},
+      rules: [],
+    });
+    expect(errors).toHaveLength(0);
   });
 });
 
