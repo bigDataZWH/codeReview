@@ -1,0 +1,92 @@
+# Tasks
+
+- [ ] Task 1: 创建 opencode 配置管理后端模块
+  - [ ] SubTask 1.1: 新增 `code-review-pkg/src/opencode-config-manager.ts`，实现 `loadOpencodeConfig()` 和 `saveOpencodeConfig(config)` 函数，读写 `opencode-config/opencode.jsonc`
+  - [ ] SubTask 1.2: 解析 config 为 `{ model: string, agents: Record<string, {description, prompt, tools}>, mcp: Record<string, {type, command, enabled}> }` 结构
+  - [ ] SubTask 1.3: 单元测试：读取/写入/格式校验
+- [ ] Task 2: 创建 opencode 进程管理后端模块
+  - [ ] SubTask 2.1: 新增 `code-review-pkg/src/opencode-process-manager.ts`，实现 `start(opts)`、`stop()`、`getStatus()`、`getLastLogLines(n)` 方法
+  - [ ] SubTask 2.2: `start` 使用 `child_process.spawn('opencode', ['serve', '--hostname', host, '--port', String(port)])`，监听 stdout/stderr 写入环形缓冲（容量 100 行）
+  - [ ] SubTask 2.3: 单例管理：已运行时 start 返回错误，进程退出时自动更新 running=false
+  - [ ] SubTask 2.4: 单元测试：start/stop/status 流程（mock spawn）
+- [ ] Task 3: 创建 review-runner 后端模块
+  - [ ] SubTask 3.1: 新增 `code-review-pkg/src/review-runner.ts`，实现 `runReviewViaOpencode(client, mrIid)` 函数
+  - [ ] SubTask 3.2: 函数内：拉取 MR diff → 调用 `opencode review-pr <mrIid>`（或等效命令）→ 解析 stdout JSON 输出为 Finding[] → 返回 findings
+  - [ ] SubTask 3.2.1: 解析失败的兜底：若 opencode 输出非 JSON，尝试从生成的报告文件解析；仍失败则抛错
+  - [ ] SubTask 3.3: 为 findings 生成稳定 ID（基于 file+line+ruleId 哈希）
+  - [ ] SubTask 3.4: 单元测试：mock opencode CLI 调用，验证 findings 解析与 ID 生成
+- [ ] Task 4: 修改后端 codehub-routes.ts 添加 opencode 路由
+  - [ ] SubTask 4.1: 新增 `GET /api/v1/opencode/config` 端点（调用 loadOpencodeConfig）
+  - [ ] SubTask 4.2: 新增 `PUT /api/v1/opencode/config` 端点（调用 saveOpencodeConfig）
+  - [ ] SubTask 4.3: 新增 `POST /api/v1/opencode/serve/start` 端点（body: {hostname?, port?}，调用 processManager.start）
+  - [ ] SubTask 4.4: 新增 `POST /api/v1/opencode/serve/stop` 端点（调用 processManager.stop）
+  - [ ] SubTask 4.5: 新增 `GET /api/v1/opencode/serve/status` 端点（返回 running/pid/port/startedAt/lastLogLines）
+  - [ ] SubTask 4.6: 在 codehub-routes.ts 中导出 `createOpencodeRoutesHandler` 或合并到现有 handler
+- [ ] Task 5: 修改后端 codehub-routes.ts review 端点 + 新增 finding-comment 端点
+  - [ ] SubTask 5.1: 修改 `POST /api/v1/codehub/mrs/:mrIid/review`：替换 `runPipeline` 调用为 `runReviewViaOpencode(client, mrIid)`，错误处理（CLI 不可用返回 500）
+  - [ ] SubTask 5.2: 新增 `POST /api/v1/codehub/mrs/:mrIid/findings/:findingId/comment` 端点：
+    - 从 reviewFindingsStore 查找 finding（按 ID）
+    - finding 不存在返回 404
+    - 调用 `client.createMRComment(mrIid, { body: 格式化 finding 内容, path: finding.file, line: finding.line, line_type: 'new' })`
+    - finding.line 为 0 时提交为普通评论（不带 position）
+    - 返回 200 + `{ ok: true, comment }`
+  - [ ] SubTask 5.3: 集成测试：完整 review → finding-comment 流程
+- [ ] Task 6: 修改后端 api-server.ts 和 cli.ts 注册 opencode 路由
+  - [ ] SubTask 6.1: api-server.ts 中初始化 opencode-process-manager 实例并传递给路由 handler
+  - [ ] SubTask 6.2: cli.ts serve 命令中创建 process-manager 和 config-manager 实例
+  - [ ] SubTask 6.3: 注册 opencode 路由前缀 `/api/v1/opencode/*`
+- [ ] Task 7: 修改后端 index.ts 导出新模块
+  - [ ] SubTask 7.1: 导出 `loadOpencodeConfig`、`saveOpencodeConfig` from opencode-config-manager.js
+  - [ ] SubTask 7.2: 导出 `OpencodeProcessManager` class from opencode-process-manager.js
+  - [ ] SubTask 7.3: 导出 `runReviewViaOpencode` from review-runner.js
+- [ ] Task 8: 前端 web/src/api/codehub.ts 新增 API 方法
+  - [ ] SubTask 8.1: 新增 `getOpencodeConfig()` → GET /opencode/config
+  - [ ] SubTask 8.2: 新增 `saveOpencodeConfig(config)` → PUT /opencode/config
+  - [ ] SubTask 8.3: 新增 `startOpencodeServe(options)` → POST /opencode/serve/start
+  - [ ] SubTask 8.4: 新增 `stopOpencodeServe()` → POST /opencode/serve/stop
+  - [ ] SubTask 8.5: 新增 `getOpencodeServeStatus()` → GET /opencode/serve/status
+  - [ ] SubTask 8.6: 新增 `runMRReview(mrIid)` → POST /codehub/mrs/{mrIid}/review（恢复此前移除的方法）
+  - [ ] SubTask 8.7: 新增 `createFindingComment(mrIid, findingId)` → POST /codehub/mrs/{mrIid}/findings/{findingId}/comment
+- [ ] Task 9: 前端 Settings.tsx 新增 opencode Tab
+  - [ ] SubTask 9.1: 新增第 3 个 Tab "opencode 配置"（RobotOutlined 图标）
+  - [ ] SubTask 9.2: 配置编辑区：model Input、agents 列表（每项 description + prompt TextArea + tools 只读）、mcp 启用 Switch
+  - [ ] SubTask 9.3: 进程控制区：启动/停止按钮 + 状态徽标（Badge running 绿 / stopped 灰）+ PID + 端口 + 日志预览（Paragraph 折叠显示最近 20 行）
+  - [ ] SubTask 9.4: 轮询状态：useQuery 查询 status，5s 间隔 refetch（enabled: tab 激活时）
+  - [ ] SubTask 9.5: 保存配置按钮调用 saveOpencodeConfig
+- [ ] Task 10: 前端 MRDetail.tsx 恢复运行审查按钮 + 新增逐条提评论
+  - [ ] SubTask 10.1: 恢复 `reviewMutation`（调用 `codehubApi.runMRReview(mrIid)`），loading 时禁用按钮
+  - [ ] SubTask 10.2: 在 findings Tab 顶部恢复"运行审查"按钮（替换原 Alert 提示，但保留"也可在 opencode 中执行"提示文字）
+  - [ ] SubTask 10.3: findings 列表每条新增"提评论"按钮（SendOutlined 图标），调用 `createFindingComment(mrIid, finding.id)`，成功后 message.success + 刷新评论列表
+  - [ ] SubTask 10.4: finding 没有 id 时禁用提评论按钮
+- [x] Task 11: 后端构建验证
+  - [x] SubTask 11.1: `cd code-review-pkg && npx tsc --noEmit` 无错误
+  - [x] SubTask 11.2: `cd code-review-pkg && npm run build` 成功
+  - [ ] SubTask 11.3: 运行现有测试套件无回归
+- [x] Task 12: 前端构建验证
+  - [x] SubTask 12.1: `cd web && npx tsc --noEmit` 无错误
+  - [x] SubTask 12.2: `cd web && npx vite build` 成功
+- [x] Task 13: Web 功能端到端测试
+  - [x] SubTask 13.1: 启动服务 `node dist/cli.js serve --port 4097 --static-dir ../web/dist`
+  - [x] SubTask 13.2: 访问 `/settings` 切换到 opencode Tab，验证配置加载、保存、启动/停止进程、状态显示
+  - [ ] SubTask 13.3: 访问 `/mrs/:iid`，点击"运行审查"按钮，验证 findings 加载（需配置真实 CodeHub 凭证才能执行）
+  - [ ] SubTask 13.4: 在 findings 列表点击"提评论"按钮，验证评论出现在 comments Tab（依赖 SubTask 13.3）
+
+# Task Dependencies
+
+- Task 2 (process-manager) 依赖 Task 1 (config-manager) 完成（进程启动需读配置）
+- Task 3 (review-runner) 依赖 Task 1（读取 opencode 配置）
+- Task 4 (opencode 路由) 依赖 Task 1 + Task 2 完成
+- Task 5 (review 端点修改) 依赖 Task 3 完成
+- Task 6 (api-server/cli 集成) 依赖 Task 4 + Task 5 完成
+- Task 7 (导出) 依赖 Task 1 + Task 2 + Task 3 完成
+- Task 9 (Settings 前端) 依赖 Task 8 (API 方法) 完成
+- Task 10 (MRDetail 前端) 依赖 Task 8 完成
+- Task 11 (后端构建) 依赖 Task 1-7 全部完成
+- Task 12 (前端构建) 依赖 Task 8 + Task 9 + Task 10 完成
+- Task 13 (E2E 测试) 依赖 Task 11 + Task 12 完成
+
+# Parallelizable Work
+
+- Task 1 + Task 2 + Task 3 可部分并行（Task 2/3 依赖 Task 1，但 Task 1 实现简单可先行）
+- Task 8 (前端 API 方法) 可与 Task 4-7 (后端) 并行
+- Task 9 + Task 10 可并行（不同页面）

@@ -76,6 +76,17 @@ import {
   type PagerDutyConfig,
   type AlertNotifierOptions,
 } from './alert-notifier.js';
+import {
+  loadCodeHubConfig,
+  isCodeHubConfigValid,
+} from './codehub-config.js';
+import { CodeHubClient } from './codehub-client.js';
+import {
+  publishFindingsAsIssue,
+  saveReportToFile,
+} from './codehub-publisher.js';
+import { runWithConcurrency } from './orchestrator.js';
+import { getDefaultParallelism } from './parallel-tuner.js';
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -1082,9 +1093,15 @@ Subcommands:
   };
 
   const portStr = getArg('--port');
-  const hostFlag = getArg('--host');
+  const hostFlag = getArg('--hostname') || getArg('--host');
   const port = portStr ? parseInt(portStr, 10) : DEFAULT_API_PORT;
   const host = hostFlag ?? DEFAULT_API_HOST;
+  const configPath = getArg('--config') || getArg('--codehub-config');
+  const repoDir = getArg('--repo-dir') || getArg('--codehub-repo-dir');
+  const opencodeConfigPath = getArg('--opencode-config');
+  const staticDir = getArg('--static-dir');
+  const noStatic = serveArgs.includes('--no-static');
+  const noCodeHub = serveArgs.includes('--no-codehub');
 
   if (portStr && (Number.isNaN(port) || port <= 0 || port > 65535)) {
     console.error(`Error: invalid --port value '${portStr}'. Must be a number between 1 and 65535.`);
@@ -1097,12 +1114,28 @@ Subcommands:
   console.log(`  GET  /api/v1/findings  获取最近一次审查的 findings`);
   console.log(`  GET  /api/v1/health    健康检查`);
   console.log(`  GET  /api/v1/metrics   获取度量指标`);
+  if (!noCodeHub) {
+    console.log(`  GET  /api/v1/codehub/* CodeHub MR 代码检视 API`);
+    console.log(`  /api/v1/opencode/*     opencode serve 进程与配置管理 API`);
+  }
+  if (!noStatic && staticDir) {
+    console.log(`  GET  /                 Web UI 静态文件服务 (${staticDir})`);
+  }
 
   // 测试/CI 场景：CODE_REVIEW_SERVE_NO_START=1 时跳过实际启动（仅打印配置）
   if (process.env.CODE_REVIEW_SERVE_NO_START === '1') {
     console.log(`[serve] CODE_REVIEW_SERVE_NO_START=1, skipping actual server start`);
   } else {
-    const server = await startApiServer({ port, host });
+    const server = await startApiServer({
+      port,
+      host,
+      enableCodeHub: !noCodeHub,
+      codehubConfigPath: configPath,
+      codehubRepoDir: repoDir,
+      opencodeConfigPath,
+      staticDir: staticDir,
+      enableStatic: !noStatic && !!staticDir,
+    });
 
     // 优雅关闭：收到 SIGINT/SIGTERM 时停止服务器
     let shuttingDown = false;
@@ -1268,6 +1301,266 @@ Subcommands:
       process.exit(1);
     }
   }
+} else if (command === 'codehub-issue') {
+  // codehub-issue — 将检视结果一键提为 CodeHub Issue
+  const issueArgs = args.slice(1);
+  const getArg = (flag: string): string | undefined => {
+    const idx = issueArgs.indexOf(flag);
+    return idx !== -1 && idx + 1 < issueArgs.length ? issueArgs[idx + 1] : undefined;
+  };
+
+  const mrIidStr = getArg('--mr-iid');
+  const fileFlag = getArg('--file');
+  const labelsFlag = getArg('--labels');
+  const configPath = getArg('--config');
+
+  if (!mrIidStr) {
+    console.error(
+      'Usage: code-review codehub-issue --mr-iid <iid> [--file <report.md>] [--labels <l1,l2>] [--config <path>]',
+    );
+    process.exit(1);
+  }
+  const mrIid = parseInt(mrIidStr, 10);
+  if (Number.isNaN(mrIid) || mrIid <= 0) {
+    console.error(`Error: invalid --mr-iid value '${mrIidStr}'`);
+    process.exit(1);
+  }
+
+  const fullConfig = loadCodeHubConfig(configPath);
+  if (!isCodeHubConfigValid(fullConfig)) {
+    console.error(
+      'Error: CodeHub config is not valid. Please configure baseUrl, token, and projectId.',
+    );
+    process.exit(1);
+  }
+  const client = new CodeHubClient({
+    baseUrl: fullConfig.baseUrl,
+    token: fullConfig.token,
+    projectId: fullConfig.projectId,
+  });
+
+  // 如有 report 文件，直接读取内容作为 issue description（不调用 publishFindingsAsIssue）
+  if (fileFlag) {
+    let reportContent: string;
+    try {
+      reportContent = readFileSync(fileFlag, 'utf-8');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`Error: failed to read report file '${fileFlag}': ${message}`);
+      process.exit(1);
+    }
+    const labels = labelsFlag ? labelsFlag.split(',').map((s) => s.trim()).filter(Boolean) : ['code-review'];
+    const title = `[代码审查] MR !${mrIid} - ${new Date().toISOString().slice(0, 10)}`;
+    try {
+      const issue = await client.createIssue({ title, description: reportContent, labels });
+      console.log(JSON.stringify({ ok: true, issue }, null, 2));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`Error: failed to create issue: ${message}`);
+      process.exit(1);
+    }
+  } else {
+    // 从 MR 评论中解析 findings（通过 finding marker）
+    const FINDING_MARKER = '<!-- code-review:finding -->';
+    let comments: Awaited<ReturnType<typeof client.getMRComments>>;
+    try {
+      comments = await client.getMRComments(mrIid);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`Error: failed to fetch MR comments: ${message}`);
+      process.exit(1);
+    }
+    const findingComments = comments.filter((c) => c.body?.includes(FINDING_MARKER));
+    if (findingComments.length === 0) {
+      console.error(
+        `Error: no findings found for MR !${mrIid}. Run review first or provide --file <report.md>.`,
+      );
+      process.exit(1);
+    }
+    const findings: Finding[] = findingComments.map((c, idx) => ({
+      file: c.position?.new_path ?? c.position?.old_path ?? 'unknown',
+      line: c.position?.new_line ?? c.position?.old_line ?? 0,
+      severity: 'info' as const,
+      category: 'review',
+      message: c.body ?? '',
+      confidence: 1,
+      source: 'ai' as const,
+      ruleId: `comment-${idx}`,
+    }));
+    const labels = labelsFlag ? labelsFlag.split(',').map((s) => s.trim()).filter(Boolean) : undefined;
+    const result = await publishFindingsAsIssue({
+      client,
+      findings,
+      mrIid,
+      labels,
+    });
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) process.exit(1);
+  }
+} else if (command === 'codehub-batch') {
+  // codehub-batch — 并发批量检视多个 MR
+  const batchArgs = args.slice(1);
+  const getArg = (flag: string): string | undefined => {
+    const idx = batchArgs.indexOf(flag);
+    return idx !== -1 && idx + 1 < batchArgs.length ? batchArgs[idx + 1] : undefined;
+  };
+  const hasFlag = (flag: string): boolean => batchArgs.includes(flag);
+
+  const mrIidsStr = getArg('--mr-iids');
+  const concurrent = hasFlag('--concurrent');
+  const saveReport = hasFlag('--save-report');
+  const createIssues = hasFlag('--create-issues');
+  const outputDir = getArg('--output-dir') ?? '.code-review-reports';
+  const configPath = getArg('--config');
+
+  if (!mrIidsStr) {
+    console.error(
+      'Usage: code-review codehub-batch --mr-iids <iid1,iid2,...> [--concurrent] [--save-report] [--output-dir <dir>] [--create-issues] [--config <path>]',
+    );
+    process.exit(1);
+  }
+  const mrIids = mrIidsStr
+    .split(',')
+    .map((s) => parseInt(s.trim(), 10))
+    .filter((n) => !Number.isNaN(n) && n > 0);
+
+  if (mrIids.length === 0) {
+    console.error(`Error: no valid MR IID found in '${mrIidsStr}'`);
+    process.exit(1);
+  }
+
+  const fullConfig = loadCodeHubConfig(configPath);
+  if (!isCodeHubConfigValid(fullConfig)) {
+    console.error(
+      'Error: CodeHub config is not valid. Please configure baseUrl, token, and projectId.',
+    );
+    process.exit(1);
+  }
+  const client = new CodeHubClient({
+    baseUrl: fullConfig.baseUrl,
+    token: fullConfig.token,
+    projectId: fullConfig.projectId,
+  });
+
+  interface BatchResultItem {
+    mrIid: number;
+    ok: boolean;
+    findingsCount: number;
+    reportPath?: string;
+    issueUrl?: string;
+    error?: string;
+  }
+
+  const processOneMR = async (mrIid: number): Promise<BatchResultItem> => {
+    const result: BatchResultItem = { mrIid, ok: false, findingsCount: 0 };
+    try {
+      const [mrDiff, mrInfo] = await Promise.all([
+        client.getMRDiff(mrIid),
+        client.getMR(mrIid).catch(() => undefined),
+      ]);
+      const mrTitle = mrInfo?.title;
+      const diffText = mrDiff.changes.map((c) => c.diff).join('\n');
+      const pipelineResult = await runPipeline(diffText, { filter: {} });
+      const findings = pipelineResult.findings ?? [];
+      result.findingsCount = findings.length;
+
+      if (saveReport) {
+        const ts = new Date().toISOString().replace(/[:.]/g, '-');
+        const filePath = `${outputDir}/mr-${mrIid}-${ts}.md`;
+        await saveReportToFile(findings, filePath, { mrIid, mrTitle });
+        result.reportPath = filePath;
+      }
+
+      if (createIssues && findings.length > 0) {
+        const issueResult = await publishFindingsAsIssue({
+          client,
+          findings,
+          mrIid,
+          mrTitle,
+        });
+        if (issueResult.ok && issueResult.issue) {
+          result.issueUrl = issueResult.issue.web_url;
+        }
+      }
+      result.ok = true;
+    } catch (err) {
+      result.error = err instanceof Error ? err.message : String(err);
+    }
+    return result;
+  };
+
+  let batchResults: BatchResultItem[];
+  if (concurrent) {
+    const concurrency = getDefaultParallelism(true);
+    console.log(`[codehub-batch] concurrent mode, parallelism=${concurrency}, mrs=${mrIids.length}`);
+    batchResults = await runWithConcurrency(mrIids, concurrency, processOneMR);
+  } else {
+    console.log(`[codehub-batch] sequential mode, mrs=${mrIids.length}`);
+    batchResults = [];
+    for (const iid of mrIids) {
+      batchResults.push(await processOneMR(iid));
+    }
+  }
+
+  console.log(JSON.stringify({ ok: true, results: batchResults }, null, 2));
+  const anyFailed = batchResults.some((r) => !r.ok);
+  if (anyFailed) process.exit(1);
+} else if (command === 'mock-codehub') {
+  // 启动 Mock CodeHub Server（本地 HTTP 服务模拟 CodeHub API v3，用于无内网环境下的集成测试）
+  const mockArgs = args.slice(1);
+  const getArg = (flag: string): string | undefined => {
+    const idx = mockArgs.indexOf(flag);
+    return idx !== -1 && idx + 1 < mockArgs.length ? mockArgs[idx + 1] : undefined;
+  };
+
+  const portStr = getArg('--port');
+  const hostname = getArg('--hostname') ?? '127.0.0.1';
+  const fixturesDir = getArg('--fixtures-dir') ?? 'mock-codehub-fixtures';
+  const port = portStr ? parseInt(portStr, 10) : 9099;
+
+  if (portStr && (Number.isNaN(port) || port <= 0 || port > 65535)) {
+    console.error(`Error: invalid --port value '${portStr}'. Must be a number between 1 and 65535.`);
+    process.exit(1);
+  }
+
+  console.log(`[mock-codehub] starting Mock CodeHub API v3 server on http://${hostname}:${port}`);
+  console.log(`[mock-codehub] fixtures dir: ${fixturesDir}`);
+  console.log(`[mock-codehub] available endpoints:`);
+  console.log(`  GET  /api/v3/projects/:id                                项目信息`);
+  console.log(`  GET  /api/v3/projects/:id/merge_requests                  MR 列表`);
+  console.log(`  GET  /api/v3/projects/:id/merge_requests/:iid             MR 详情`);
+  console.log(`  GET  /api/v3/projects/:id/merge_requests/:iid/diffs       MR diff`);
+  console.log(`  GET  /api/v3/projects/:id/merge_requests/:iid/notes       评论列表`);
+  console.log(`  POST /api/v3/projects/:id/merge_requests/:iid/notes       创建评论`);
+  console.log(`  DELETE /api/v3/projects/:id/merge_requests/:iid/notes/:id 删除评论`);
+  console.log(`  GET  /api/v3/projects/:id/issues                          Issue 列表`);
+  console.log(`  POST /api/v3/projects/:id/issues                          创建 Issue`);
+  console.log(`  GET  /api/v3/projects/:id/repository/branches             分支列表`);
+  console.log(`  GET  /api/v3/projects/:id/repository/branches/:name       分支详情`);
+  console.log(``);
+  console.log(`[mock-codehub] test CodeHub config (paste into Web UI Settings):`);
+  console.log(`  baseUrl:    http://${hostname}:${port}`);
+  console.log(`  projectId:  1`);
+  console.log(`  token:      mock-token-anything-non-empty`);
+
+  if (process.env.CODE_REVIEW_SERVE_NO_START === '1') {
+    console.log(`[mock-codehub] CODE_REVIEW_SERVE_NO_START=1, skipping actual server start`);
+  } else {
+    const { startMockCodeHubServer } = await import('./mock-codehub-server.js');
+    const handle = await startMockCodeHubServer({ port, hostname, fixturesDir });
+    if (!handle.ok) {
+      console.error(`[mock-codehub] failed to start: ${(handle as { error?: string }).error ?? 'unknown'}`);
+      process.exit(1);
+    }
+    console.log(`[mock-codehub] server listening on ${handle.baseUrl}`);
+
+    const shutdown = (sig: string) => {
+      console.log(`[mock-codehub] received ${sig}, shutting down...`);
+      handle.close().then(() => process.exit(0));
+    };
+    process.on('SIGINT', () => void shutdown('SIGINT'));
+    process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  }
 } else {
     console.log(`code-review v0.1.0
 
@@ -1284,7 +1577,15 @@ Usage:
   code-review metrics --sessions <json> --findings <json> --feedback <json> [--token-consumed <number>]  Generate review metrics
   code-review dashboard        < input.json  Generate dashboard data with trends and charts
   code-review rules <list|show|enable|disable|override> [options]  Customize review rules
-  code-review serve [--port <port>] [--host <host>]  Start HTTP API server (default: 127.0.0.1:3000)
+  code-review serve [--port <port>] [--hostname <host>] [--config <path>] [--repo-dir <dir>] [--opencode-config <path>] [--static-dir <dir>] [--no-codehub] [--no-static]
+                                             Start HTTP API server (default: 127.0.0.1:3000)
+                                             --hostname: bind address (e.g. 0.0.0.0 for all interfaces)
+                                             --config: CodeHub config file path
+                                             --repo-dir: local repo directory
+                                             --opencode-config: opencode.jsonc config file path (default: opencode-config/opencode.jsonc)
+                                             --static-dir: Web UI static files directory
+                                             --no-codehub: disable CodeHub integration
+                                             --no-static: disable static file serving
   code-review alert --severity <critical|high|medium|low|info> --message <text> [--title <title>] [--source <name>] [--slack-url <url>] [--email-to <addr>] [--pagerduty-key <key>]  Send alert notification
 
   The review/security-review/scan/impact/reflect commands accept:
@@ -1338,5 +1639,21 @@ Usage:
     --slack-min-severity <sev>    Min severity to trigger Slack (default: medium)
     --email-min-severity <sev>    Min severity to trigger Email (default: medium)
     --pagerduty-min-severity <sev> Min severity to trigger PagerDuty (default: high)
-    CODE_REVIEW_ALERT_NO_NETWORK=1  Dry-run: print payload without sending requests`);
+    CODE_REVIEW_ALERT_NO_NETWORK=1  Dry-run: print payload without sending requests
+
+  codehub-issue --mr-iid <iid> [--file <report.md>] [--labels <l1,l2>] [--config <path>]
+                                             Submit review findings as a CodeHub Issue
+                                             --file: use existing report markdown as issue description
+                                             --labels: comma-separated issue labels (default: code-review)
+  codehub-batch --mr-iids <iid1,iid2,...> [--concurrent] [--save-report] [--output-dir <dir>] [--create-issues] [--config <path>]
+                                             Batch review multiple MRs (LLM provided by opencode)
+                                             --concurrent: enable concurrent review (parallelism auto-tuned)
+                                             --save-report: save each MR report as markdown
+                                             --output-dir: report output dir (default: .code-review-reports)
+                                             --create-issues: create CodeHub issue for each MR with findings
+  code-review mock-codehub [--port <port>] [--hostname <host>] [--fixtures-dir <path>]
+                                             Start local Mock CodeHub API v3 server for integration testing
+                                             --port: listen port (default: 9099)
+                                             --hostname: bind address (default: 127.0.0.1)
+                                             --fixtures-dir: fixture JSON directory (default: mock-codehub-fixtures)`);
 }

@@ -52,6 +52,16 @@ subtask: true
 !`gh pr view $ARGUMENTS --json headRepository,number --jq '{owner: .headRepository.owner.login, repo: .headRepository.name, pr: .number}' > /tmp/pr-info.json`
 !`code-review publish --owner $(jq -r '.owner' /tmp/pr-info.json) --repo $(jq -r '.repo' /tmp/pr-info.json) --pr $(jq -r '.pr' /tmp/pr-info.json) --file findings.json`
 
+### 报告保存
+审查完成后，将检视报告保存为 Markdown 文件到本地，便于检视人离线阅读：
+
+!`code-review export --format markdown --output .code-review-reports/review-pr-$ARGUMENTS-$(date +%Y%m%d%H%M%S).md`
+
+### 提 Issue 到 CodeHub
+将检视结果一键提为 CodeHub Issue（$ARGUMENTS 视为 CodeHub MR IID）：
+
+!`code-review codehub-issue --mr-iid $ARGUMENTS --file .code-review-reports/review-pr-$ARGUMENTS-latest.md`
+
 ## Examples
 
 ### 场景 1：审查指定 PR

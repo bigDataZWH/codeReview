@@ -2,7 +2,7 @@
 import fs from 'fs';
 import path from 'path';
 
-const __dirname = path.dirname(new URL(import.meta.url).pathname);
+const __dirname = path.dirname(new URL(import.meta.url).pathname.replace(/^\//, ''));
 const rootDir = path.resolve(__dirname, '..');
 const sourceFile = path.join(rootDir, 'src', 'post-processor.ts');
 const outputFile = path.join(rootDir, 'opencode-config', '.opencode', 'rules', 'false-positive-filters.md');

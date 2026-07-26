@@ -20,10 +20,14 @@
 // - `code-review serve --port 3000` 启动 API 服务器
 
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http';
+import { existsSync, statSync, createReadStream } from 'node:fs';
+import { join, resolve, normalize, sep } from 'node:path';
 import { runPipeline } from './pipeline.js';
 import { collectMetrics, type MetricsInput, type ReviewMetrics } from './metrics.js';
 import { FeedbackStore } from './feedback.js';
 import type { Finding, PipelineResult } from './types.js';
+import { createCodeHubRoutesHandler } from './codehub-routes.js';
+import { OpencodeProcessManager } from './opencode-process-manager.js';
 
 // ==================== 类型定义 ====================
 
@@ -45,6 +49,18 @@ export interface ApiServerOptions {
   metricsInput?: MetricsInput;
   /** 日志函数（默认 console.log） */
   logger?: (message: string, ...args: unknown[]) => void;
+  /** 是否启用 CodeHub 功能（默认 true） */
+  enableCodeHub?: boolean;
+  /** CodeHub 配置文件路径 */
+  codehubConfigPath?: string;
+  /** CodeHub 本地仓库目录 */
+  codehubRepoDir?: string;
+  /** opencode 配置文件路径（默认 opencode-config/opencode.jsonc） */
+  opencodeConfigPath?: string;
+  /** 静态文件目录（Web UI） */
+  staticDir?: string;
+  /** 是否启用静态文件服务（默认 true） */
+  enableStatic?: boolean;
 }
 
 /** /api/v1/review 请求体 */
@@ -195,6 +211,9 @@ export class ApiServer {
   private readonly feedbackStore: FeedbackStore;
   private readonly metricsInput?: MetricsInput;
   private readonly logger: (message: string, ...args: unknown[]) => void;
+  private readonly enableCodeHub: boolean;
+  private readonly enableStatic: boolean;
+  private readonly staticDir?: string;
 
   private server: Server | null = null;
   private startedAt: string | null = null;
@@ -202,6 +221,9 @@ export class ApiServer {
   private lastReviewAt: string | null = null;
   private lastFindings: Finding[] = [];
   private lastResult: PipelineResult | null = null;
+  private codeHubHandler: ReturnType<typeof createCodeHubRoutesHandler> | null = null;
+  private codeHubFindingsStore = new Map<string, Finding[]>();
+  private opencodeProcessManager: OpencodeProcessManager | null = null;
 
   constructor(options: ApiServerOptions = {}) {
     this.port = options.port ?? DEFAULT_API_PORT;
@@ -211,8 +233,22 @@ export class ApiServer {
     this.feedbackStore = options.feedbackStore ?? new FeedbackStore();
     this.metricsInput = options.metricsInput;
     this.logger = options.logger ?? console.log;
+    this.enableCodeHub = options.enableCodeHub ?? true;
+    this.enableStatic = options.enableStatic ?? true;
+    this.staticDir = options.staticDir;
     if (options.initialFindings) {
       this.lastFindings = [...options.initialFindings];
+    }
+
+    if (this.enableCodeHub) {
+      this.opencodeProcessManager = new OpencodeProcessManager();
+      this.codeHubHandler = createCodeHubRoutesHandler({
+        configPath: options.codehubConfigPath,
+        repoBaseDir: options.codehubRepoDir,
+        reviewFindingsStore: this.codeHubFindingsStore,
+        opencodeProcessManager: this.opencodeProcessManager,
+        opencodeConfigPath: options.opencodeConfigPath,
+      });
     }
   }
 
@@ -248,6 +284,9 @@ export class ApiServer {
     if (!this.server) return;
     const server = this.server;
     this.server = null;
+    if (this.opencodeProcessManager) {
+      await this.opencodeProcessManager.stop().catch(() => undefined);
+    }
     return new Promise((resolve) => {
       server.close(() => resolve());
     });
@@ -292,8 +331,8 @@ export class ApiServer {
 
     // CORS 头（便于开发调试）
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
     if (method === 'OPTIONS') {
       res.writeHead(204);
@@ -317,8 +356,140 @@ export class ApiServer {
       return this.handleMetrics(req, res);
     }
 
+    if (
+      this.codeHubHandler &&
+      (path.startsWith('/api/v1/codehub') || path.startsWith('/api/v1/opencode'))
+    ) {
+      const handled = await this.codeHubHandler(req, res);
+      if (handled) return;
+    }
+
+    if (this.enableStatic && (method === 'GET' || method === 'HEAD')) {
+      const handled = this.tryServeStatic(req, res, path);
+      if (handled) return;
+    }
+
     // 未匹配路由
     sendJson(res, 404, { ok: false, error: `Not found: ${method} ${path}` });
+  }
+
+  /** 尝试提供静态文件服务 */
+  private tryServeStatic(
+    req: IncomingMessage,
+    res: ServerResponse,
+    path: string,
+  ): boolean {
+    if (!this.staticDir || !existsSync(this.staticDir)) {
+      return false;
+    }
+
+    let requestPath = path === '/' ? '/index.html' : path;
+    if (requestPath.startsWith('/')) {
+      requestPath = requestPath.slice(1);
+    }
+
+    const normalizedPath = normalize(requestPath);
+    if (normalizedPath.startsWith('..') || normalizedPath.includes('\0')) {
+      return false;
+    }
+    const cleanedPath = normalizedPath.replace(/^(\.\.[\\/])+/, '');
+    if (cleanedPath.startsWith('..') || cleanedPath.includes('\0')) {
+      return false;
+    }
+
+    let filePath = join(this.staticDir, cleanedPath);
+    const staticDirResolved = resolve(this.staticDir);
+    const resolvedPath = resolve(filePath);
+    if (!resolvedPath.startsWith(staticDirResolved + sep) && resolvedPath !== staticDirResolved) {
+      return false;
+    }
+
+    if (existsSync(filePath) && statSync(filePath).isDirectory()) {
+      filePath = join(filePath, 'index.html');
+    }
+
+    if (!existsSync(filePath) || !statSync(filePath).isFile()) {
+      if (this.enableSpaFallback(req, path)) {
+        const indexPath = join(staticDirResolved, 'index.html');
+        if (existsSync(indexPath)) {
+          this.serveFile(req, res, indexPath);
+          return true;
+        }
+      }
+      return false;
+    }
+
+    this.serveFile(req, res, filePath);
+    return true;
+  }
+
+  /** 判断是否需要 SPA 回退 */
+  private enableSpaFallback(req: IncomingMessage, path: string): boolean {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return false;
+    if (path.startsWith('/api/')) return false;
+    if (path.includes('.')) return false;
+    return true;
+  }
+
+  /** 提供静态文件 */
+  private serveFile(req: IncomingMessage, res: ServerResponse, filePath: string): void {
+    const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
+    const mimeTypes: Record<string, string> = {
+      html: 'text/html; charset=utf-8',
+      htm: 'text/html; charset=utf-8',
+      js: 'application/javascript; charset=utf-8',
+      mjs: 'application/javascript; charset=utf-8',
+      css: 'text/css; charset=utf-8',
+      json: 'application/json; charset=utf-8',
+      png: 'image/png',
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+      gif: 'image/gif',
+      svg: 'image/svg+xml',
+      ico: 'image/x-icon',
+      woff: 'font/woff',
+      woff2: 'font/woff2',
+      ttf: 'font/ttf',
+      eot: 'application/vnd.ms-fontobject',
+      map: 'application/json; charset=utf-8',
+      txt: 'text/plain; charset=utf-8',
+      xml: 'application/xml; charset=utf-8',
+    };
+
+    const contentType = mimeTypes[ext] ?? 'application/octet-stream';
+
+    try {
+      const stat = statSync(filePath);
+      const rangeHeader = req.headers.range;
+
+      if (rangeHeader) {
+        const parts = rangeHeader.replace(/bytes=/, '').split('-');
+        const start = parseInt(parts[0], 10);
+        const end = parts[1] ? parseInt(parts[1], 10) : stat.size - 1;
+        const chunkSize = end - start + 1;
+
+        const fileStream = createReadStream(filePath, { start, end });
+        res.writeHead(206, {
+          'Content-Type': contentType,
+          'Content-Length': chunkSize,
+          'Content-Range': `bytes ${start}-${end}/${stat.size}`,
+          'Accept-Ranges': 'bytes',
+          'Cache-Control': 'public, max-age=3600',
+        });
+        fileStream.pipe(res);
+      } else {
+        const fileStream = createReadStream(filePath);
+        res.writeHead(200, {
+          'Content-Type': contentType,
+          'Content-Length': stat.size,
+          'Cache-Control': 'public, max-age=3600',
+          'Last-Modified': stat.mtime.toUTCString(),
+        });
+        fileStream.pipe(res);
+      }
+    } catch {
+      sendJson(res, 500, { ok: false, error: 'Failed to serve file' });
+    }
   }
 
   /** GET /api/v1/health */
