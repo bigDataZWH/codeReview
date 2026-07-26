@@ -583,3 +583,52 @@ export type {
   SendAlertOptions,
   AlertNotifierOptions,
 } from './alert-notifier.js';
+
+// codehub-client (CodeHub API 客户端)
+export { CodeHubClient, createCodeHubClient } from './codehub-client.js';
+
+// codehub-config (CodeHub 配置管理)
+export {
+  loadCodeHubConfig,
+  saveCodeHubConfig,
+  getCodeHubConfig,
+  isCodeHubConfigValid,
+  maskToken,
+  DEFAULT_CONFIG_FILE,
+} from './codehub-config.js';
+export type { CodeHubFullConfig } from './codehub-config.js';
+
+// repo-manager (本地仓库管理)
+export { RepoManager, createRepoManager, DEFAULT_REPO_BASE_DIR } from './repo-manager.js';
+export type { RepoManagerOptions, RepoInfo } from './types.js';
+
+// codehub-routes (CodeHub API 路由)
+export { createCodeHubRoutesHandler } from './codehub-routes.js';
+
+// codehub-publisher (CodeHub 评论发布器)
+export {
+  publishFindingsToCodeHub,
+  fetchExistingCodeHubComments,
+  CodeHubCommentPublisher,
+  saveReportToFile,
+  publishFindingsAsIssue,
+} from './codehub-publisher.js';
+export type { CodeHubPublishOptions, CodeHubPublishResult } from './codehub-publisher.js';
+
+// CodeHub Issue 类型（用于将检视结果提为 Issue）
+export type { CodeHubIssue, CodeHubCreateIssueOptions } from './types.js';
+
+// opencode 配置管理（读写 opencode.jsonc）
+export { loadOpencodeConfig, saveOpencodeConfig } from './opencode-config-manager.js';
+export type { OpencodeConfig, OpencodeAgent, OpencodeMcpEntry } from './opencode-config-manager.js';
+
+// opencode 进程管理（启停 opencode serve 子进程 + 状态 + 日志缓冲）
+export { OpencodeProcessManager } from './opencode-process-manager.js';
+export type { OpencodeServeStatus, OpencodeStartResult, OpencodeStopResult } from './opencode-process-manager.js';
+
+// review-runner（通过 opencode CLI 执行审查）
+export { runReviewViaOpencode } from './review-runner.js';
+
+// Mock CodeHub Server（本地 HTTP 服务模拟 CodeHub API v3，用于无内网环境下的集成测试）
+export { startMockCodeHubServer } from './mock-codehub-server.js';
+export type { MockCodeHubServerOptions, MockCodeHubServerHandle } from './mock-codehub-server.js';

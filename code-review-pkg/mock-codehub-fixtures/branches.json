@@ -1,0 +1,53 @@
+[
+  {
+    "name": "main",
+    "merged": false,
+    "protected": true,
+    "default": true,
+    "can_push": false,
+    "web_url": "https://codehub.example.com/team/demo-project/-/tree/main",
+    "commit": {
+      "id": "a1b2c3d4e5f6789012345678901234567890abcd",
+      "short_id": "a1b2c3d4",
+      "title": "release: v1.2.0",
+      "author_name": "张三",
+      "author_email": "zhangsan@example.com",
+      "created_at": "2026-07-22T18:00:00.000Z",
+      "message": "release: v1.2.0\n\n- 修复登录模块安全问题\n- 新增工具函数库\n- 文档完善\n"
+    }
+  },
+  {
+    "name": "feature/auth-improvement",
+    "merged": false,
+    "protected": false,
+    "default": false,
+    "can_push": true,
+    "web_url": "https://codehub.example.com/team/demo-project/-/tree/feature/auth-improvement",
+    "commit": {
+      "id": "f6e5d4c3b2a1098765432100fedcba9876543210",
+      "short_id": "f6e5d4c3",
+      "title": "feat(auth): 使用参数化查询替代字符串拼接",
+      "author_name": "张三",
+      "author_email": "zhangsan@example.com",
+      "created_at": "2026-07-25T14:20:00.000Z",
+      "message": "feat(auth): 使用参数化查询替代字符串拼接\n\n- 移除 login.ts 中的 SQL 拼接\n- 调用 createUser 工具函数\n- 更新相关测试\n"
+    }
+  },
+  {
+    "name": "feature/mr-review-tooling",
+    "merged": false,
+    "protected": false,
+    "default": false,
+    "can_push": true,
+    "web_url": "https://codehub.example.com/team/demo-project/-/tree/feature/mr-review-tooling",
+    "commit": {
+      "id": "1a2b3c4d5e6f789012345678901234567890abcd",
+      "short_id": "1a2b3c4d",
+      "title": "chore(utils): 新增 debounce 工具函数",
+      "author_name": "张三",
+      "author_email": "zhangsan@example.com",
+      "created_at": "2026-07-23T11:05:00.000Z",
+      "message": "chore(utils): 新增 debounce 工具函数\n\n新增 debounce 函数用于输入防抖场景。\n"
+    }
+  }
+]

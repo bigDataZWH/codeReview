@@ -1,0 +1,78 @@
+[
+  {
+    "id": 1001,
+    "body": "## 总体评价\n\n感谢提交这个重构 MR :+1: 移除 SQL 拼接是非常必要的改进。\n\n### 建议\n\n1. 请补充 `createUser` 在并发场景下的测试用例\n2. `helpers.ts` 中的 `randomString` 使用 `Math.random()`，不适合用于安全敏感场景，建议在文档中注明\n3. README 文档更新很完善，无需调整\n\n期待下一版修订。",
+    "author": {
+      "id": 102,
+      "name": "王五",
+      "username": "wangwu",
+      "avatar_url": "https://codehub.example.com/avatars/102.png",
+      "email": "wangwu@example.com"
+    },
+    "created_at": "2026-07-21T10:00:00.000Z",
+    "updated_at": "2026-07-21T10:00:00.000Z",
+    "resolvable": false,
+    "resolved": false
+  },
+  {
+    "id": 1002,
+    "body": "🔴 **critical · SQL 注入风险残留**\n\n虽然已经改用 `createUser`，但 `req.body` 直接解构传入 `createUser(username, password)` 仍然需要确认 `createUser` 内部是否使用了参数化查询。\n\n```ts\nconst { username, password } = req.body;\nconst user = await createUser(username, password);\n```\n\n建议：\n- 在 `createUser` 实现中显式使用占位符 `?` 传参\n- 对 `username`/`password` 增加长度与字符集校验\n- 添加单元测试覆盖注入 payload（如 `' OR '1'='1`）\n\n参考：[OWASP SQL Injection Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html)",
+    "author": {
+      "id": 103,
+      "name": "赵六",
+      "username": "zhaoliu",
+      "avatar_url": "https://codehub.example.com/avatars/103.png",
+      "email": "zhaoliu@example.com"
+    },
+    "created_at": "2026-07-22T14:30:00.000Z",
+    "updated_at": "2026-07-22T14:30:00.000Z",
+    "path": "src/auth/login.ts",
+    "line": 7,
+    "line_type": "new",
+    "position": {
+      "base_sha": "a1b2c3d4e5f6789012345678",
+      "head_sha": "f6e5d4c3b2a1098765432100",
+      "start_sha": "b2c3d4e5f6a1098765432101",
+      "new_path": "src/auth/login.ts",
+      "old_path": "src/auth/login.ts",
+      "new_line": 7,
+      "position_type": "text"
+    },
+    "resolvable": true,
+    "resolved": false
+  },
+  {
+    "id": 1003,
+    "body": "🟡 **medium · 使用 Math.random() 不安全**\n\n`helpers.ts` 第 28 行 `randomString` 使用 `Math.random()` 作为随机源，不适合用于 token、密码重置链接等安全场景。\n\n```ts\nexport function randomString(length = 16): string {\n  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';\n  let result = '';\n  for (let i = 0; i < length; i++) {\n    result += chars.charAt(Math.floor(Math.random() * chars.length));\n  }\n  return result;\n}\n```\n\n建议改用 `crypto.randomBytes`：\n\n```ts\nimport { randomBytes } from 'node:crypto';\nexport function randomString(length = 16): string {\n  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';\n  const bytes = randomBytes(length);\n  let result = '';\n  for (let i = 0; i < length; i++) {\n    result += chars[bytes[i] % chars.length];\n  }\n  return result;\n}\n```\n\n或在文档中明确标注「不可用于安全场景」。",
+    "author": {
+      "id": 103,
+      "name": "赵六",
+      "username": "zhaoliu",
+      "avatar_url": "https://codehub.example.com/avatars/103.png",
+      "email": "zhaoliu@example.com"
+    },
+    "created_at": "2026-07-22T15:00:00.000Z",
+    "updated_at": "2026-07-23T09:00:00.000Z",
+    "path": "src/utils/helpers.ts",
+    "line": 28,
+    "line_type": "new",
+    "position": {
+      "base_sha": "a1b2c3d4e5f6789012345678",
+      "head_sha": "f6e5d4c3b2a1098765432100",
+      "start_sha": "b2c3d4e5f6a1098765432101",
+      "new_path": "src/utils/helpers.ts",
+      "old_path": "src/utils/helpers.ts",
+      "new_line": 28,
+      "position_type": "text"
+    },
+    "resolvable": true,
+    "resolved": true,
+    "resolved_by": {
+      "id": 100,
+      "name": "张三",
+      "username": "zhangsan",
+      "avatar_url": "https://codehub.example.com/avatars/100.png",
+      "email": "zhangsan@example.com"
+    }
+  }
+]

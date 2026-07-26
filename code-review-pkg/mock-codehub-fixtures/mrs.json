@@ -1,0 +1,184 @@
+[
+  {
+    "id": 101,
+    "iid": 1,
+    "title": "feat(auth): 重构登录模块，使用参数化查询",
+    "description": "## 背景\n\n当前登录模块使用字符串拼接构造 SQL，存在 SQL 注入风险。本 MR 重构登录逻辑，使用参数化查询并通过 `createUser` 工具函数统一用户创建流程。\n\n## 变更\n- 修改 `src/auth/login.ts`：移除 SQL 拼接，调用 `createUser`\n- 新增 `src/utils/helpers.ts`：包含 `formatDate`、`parseJSON` 等工具函数\n- 更新 `README.md`：补充工具函数使用说明\n\n## 测试\n- 单元测试已通过\n- 手动验证登录流程正常\n\n## 风险\n- 需确认 `createUser` 在并发场景下的行为",
+    "state": "open",
+    "source_branch": "feature/auth-improvement",
+    "target_branch": "main",
+    "author": {
+      "id": 100,
+      "name": "张三",
+      "username": "zhangsan",
+      "avatar_url": "https://codehub.example.com/avatars/100.png",
+      "email": "zhangsan@example.com"
+    },
+    "assignees": [
+      {
+        "id": 101,
+        "name": "李四",
+        "username": "lisi",
+        "avatar_url": "https://codehub.example.com/avatars/101.png",
+        "email": "lisi@example.com"
+      }
+    ],
+    "reviewers": [
+      {
+        "id": 102,
+        "name": "王五",
+        "username": "wangwu",
+        "avatar_url": "https://codehub.example.com/avatars/102.png",
+        "email": "wangwu@example.com"
+      }
+    ],
+    "created_at": "2026-07-20T09:15:00.000Z",
+    "updated_at": "2026-07-25T14:20:00.000Z",
+    "web_url": "https://codehub.example.com/team/demo-project/merge_requests/1",
+    "source_project_id": 1,
+    "target_project_id": 1,
+    "merge_status": "can_be_merged",
+    "changes_count": "3",
+    "user_notes_count": 3,
+    "labels": ["enhancement", "auth", "needs-review"],
+    "work_in_progress": false
+  },
+  {
+    "id": 102,
+    "iid": 2,
+    "title": "chore(utils): 新增 debounce 工具函数",
+    "description": "新增 `debounce` 工具函数，用于后续搜索框输入防抖场景。\n\n## 用法\n\n```ts\nimport { debounce } from './utils/debounce';\n\nconst debouncedSearch = debounce((q: string) => fetch(`/api/search?q=${q}`), 300);\n```",
+    "state": "open",
+    "source_branch": "feature/mr-review-tooling",
+    "target_branch": "main",
+    "author": {
+      "id": 100,
+      "name": "张三",
+      "username": "zhangsan",
+      "avatar_url": "https://codehub.example.com/avatars/100.png",
+      "email": "zhangsan@example.com"
+    },
+    "assignees": [],
+    "reviewers": [],
+    "created_at": "2026-07-23T11:00:00.000Z",
+    "updated_at": "2026-07-23T11:05:00.000Z",
+    "web_url": "https://codehub.example.com/team/demo-project/merge_requests/2",
+    "source_project_id": 1,
+    "target_project_id": 1,
+    "merge_status": "can_be_merged",
+    "changes_count": "1",
+    "user_notes_count": 1,
+    "labels": ["chore", "utils"],
+    "work_in_progress": false
+  },
+  {
+    "id": 103,
+    "iid": 3,
+    "title": "fix(security): 修复密钥硬编码问题",
+    "description": "## 安全修复\n\n审计发现 `src/config/secrets.ts` 中硬编码了 JWT 签名密钥，已替换为从环境变量读取。\n\n## 影响\n- 部署时需配置 `JWT_SECRET` 环境变量\n- 旧 token 在密钥轮换后失效，需用户重新登录\n\n## 验证\n- 通过 `gitleaks` 扫描\n- 启动时若未配置 `JWT_SECRET` 会抛出明确错误",
+    "state": "merged",
+    "source_branch": "fix/hardcoded-secret",
+    "target_branch": "main",
+    "author": {
+      "id": 100,
+      "name": "张三",
+      "username": "zhangsan",
+      "avatar_url": "https://codehub.example.com/avatars/100.png",
+      "email": "zhangsan@example.com"
+    },
+    "assignees": [
+      {
+        "id": 102,
+        "name": "王五",
+        "username": "wangwu",
+        "avatar_url": "https://codehub.example.com/avatars/102.png",
+        "email": "wangwu@example.com"
+      }
+    ],
+    "reviewers": [
+      {
+        "id": 103,
+        "name": "赵六",
+        "username": "zhaoliu",
+        "avatar_url": "https://codehub.example.com/avatars/103.png",
+        "email": "zhaoliu@example.com"
+      }
+    ],
+    "created_at": "2026-07-10T08:00:00.000Z",
+    "updated_at": "2026-07-12T16:30:00.000Z",
+    "merged_at": "2026-07-12T16:30:00.000Z",
+    "web_url": "https://codehub.example.com/team/demo-project/merge_requests/3",
+    "source_project_id": 1,
+    "target_project_id": 1,
+    "merge_status": "can_be_merged",
+    "changes_count": "2",
+    "user_notes_count": 5,
+    "labels": ["security", "priority/high"],
+    "work_in_progress": false
+  },
+  {
+    "id": 104,
+    "iid": 4,
+    "title": "experimental: 尝试引入 GraphQL 改造 API",
+    "description": "实验性分支，尝试将 REST API 改造为 GraphQL。经过评估，决定暂不引入，关闭此 MR。\n\n保留分支以便后续参考。",
+    "state": "closed",
+    "source_branch": "experiment/graphql",
+    "target_branch": "main",
+    "author": {
+      "id": 101,
+      "name": "李四",
+      "username": "lisi",
+      "avatar_url": "https://codehub.example.com/avatars/101.png",
+      "email": "lisi@example.com"
+    },
+    "assignees": [],
+    "reviewers": [],
+    "created_at": "2026-06-05T13:00:00.000Z",
+    "updated_at": "2026-06-18T09:45:00.000Z",
+    "closed_at": "2026-06-18T09:45:00.000Z",
+    "web_url": "https://codehub.example.com/team/demo-project/merge_requests/4",
+    "source_project_id": 1,
+    "target_project_id": 1,
+    "merge_status": "cannot_be_merged",
+    "changes_count": "15",
+    "user_notes_count": 8,
+    "labels": ["experiment", "wontfix"],
+    "work_in_progress": true
+  },
+  {
+    "id": 105,
+    "iid": 5,
+    "title": "docs: 更新 README 与 CONTRIBUTING 文档",
+    "description": "## 文档更新\n\n- README.md：补充快速开始、环境要求、常见问题\n- CONTRIBUTING.md：新增代码规范、PR 流程、commit message 规范\n- docs/architecture.md：更新架构图说明\n\n无代码变更，仅文档。",
+    "state": "open",
+    "source_branch": "docs/update-readme",
+    "target_branch": "main",
+    "author": {
+      "id": 101,
+      "name": "李四",
+      "username": "lisi",
+      "avatar_url": "https://codehub.example.com/avatars/101.png",
+      "email": "lisi@example.com"
+    },
+    "assignees": [
+      {
+        "id": 100,
+        "name": "张三",
+        "username": "zhangsan",
+        "avatar_url": "https://codehub.example.com/avatars/100.png",
+        "email": "zhangsan@example.com"
+      }
+    ],
+    "reviewers": [],
+    "created_at": "2026-07-24T10:00:00.000Z",
+    "updated_at": "2026-07-24T10:00:00.000Z",
+    "web_url": "https://codehub.example.com/team/demo-project/merge_requests/5",
+    "source_project_id": 1,
+    "target_project_id": 1,
+    "merge_status": "can_be_merged",
+    "changes_count": "3",
+    "user_notes_count": 0,
+    "labels": ["documentation"],
+    "work_in_progress": false
+  }
+]

@@ -1,0 +1,17 @@
+{
+  "id": 1,
+  "name": "demo-project",
+  "path": "demo-project",
+  "path_with_namespace": "team/demo-project",
+  "description": "用于测试的示例项目",
+  "web_url": "https://codehub.example.com/team/demo-project",
+  "default_branch": "main",
+  "visibility": "internal",
+  "ssh_url_to_repo": "git@codehub.example.com:team/demo-project.git",
+  "http_url_to_repo": "https://codehub.example.com/team/demo-project.git",
+  "created_at": "2025-09-01T08:00:00.000Z",
+  "last_activity_at": "2026-07-25T10:30:00.000Z",
+  "star_count": 5,
+  "forks_count": 2,
+  "open_issues_count": 8
+}

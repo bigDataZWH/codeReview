@@ -1,0 +1,17 @@
+[
+  {
+    "id": 2001,
+    "body": "欢迎提交第一个 MR！:tada:\n\n`debounce` 实现简洁清晰，类型签名也写得不错。几个小建议：\n\n- 考虑增加 `cancel()` 方法以便调用方在组件卸载时清理定时器\n- 可以补充一个使用示例到 `helpers.ts` 的注释中\n\nLGTM，准备合并。",
+    "author": {
+      "id": 102,
+      "name": "王五",
+      "username": "wangwu",
+      "avatar_url": "https://codehub.example.com/avatars/102.png",
+      "email": "wangwu@example.com"
+    },
+    "created_at": "2026-07-23T11:30:00.000Z",
+    "updated_at": "2026-07-23T11:30:00.000Z",
+    "resolvable": false,
+    "resolved": false
+  }
+]

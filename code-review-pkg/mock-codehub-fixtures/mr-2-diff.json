@@ -1,0 +1,22 @@
+{
+  "id": 2,
+  "iid": 2,
+  "diff_refs": {
+    "base_sha": "1122334455667788aabbccdd",
+    "head_sha": "aabbccddeeff001122334455",
+    "start_sha": "a1b2c3d4e5f6aabbccddeeff"
+  },
+  "changes": [
+    {
+      "diff": "diff --git a/src/utils/debounce.ts b/src/utils/debounce.ts\nnew file mode 100644\nindex 0000000..2233445\n--- /dev/null\n+++ b/src/utils/debounce.ts\n@@ -0,0 +1,22 @@\n+/**\n+ * 创建一个防抖函数：在最后一次调用后延迟 wait 毫秒再执行。\n+ *\n+ * @param fn 待防抖的函数\n+ * @param wait 等待毫秒数，默认 300\n+ */\n+export function debounce<T extends (...args: any[]) => void>(\n+  fn: T,\n+  wait = 300,\n+): (...args: Parameters<T>) => void {\n+  let timer: ReturnType<typeof setTimeout> | null = null;\n+  return (...args: Parameters<T>) => {\n+    if (timer) {\n+      clearTimeout(timer);\n+    }\n+    timer = setTimeout(() => {\n+      fn(...args);\n+      timer = null;\n+    }, wait);\n+  };\n+}\n",
+      "new_path": "src/utils/debounce.ts",
+      "old_path": "src/utils/debounce.ts",
+      "a_mode": "0",
+      "b_mode": "100644",
+      "new_file": true,
+      "renamed_file": false,
+      "deleted_file": false,
+      "binary": false
+    }
+  ]
+}
