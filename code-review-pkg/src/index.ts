@@ -676,3 +676,20 @@ export type {
 // Mock CodeHub Server（本地 HTTP 服务模拟 CodeHub API v3，用于无内网环境下的集成测试）
 export { startMockCodeHubServer } from './mock-codehub-server.js';
 export type { MockCodeHubServerOptions, MockCodeHubServerHandle } from './mock-codehub-server.js';
+
+// environment-checker (环境检测模块)
+export { checkEnvironment } from './environment-checker.js';
+export type {
+  EnvironmentCheckResult,
+  PortCheck,
+  CheckEnvironmentOptions,
+} from './environment-checker.js';
+
+// quick-config-routes (一键配置路由)
+export { createQuickConfigRoutesHandler } from './quick-config-routes.js';
+export type {
+  QuickConfigureRequest,
+  StartAllResponse,
+  ServiceStartResult,
+  QuickConfigRoutesOptions,
+} from './quick-config-routes.js';

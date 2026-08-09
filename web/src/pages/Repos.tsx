@@ -1,48 +1,40 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import {
   Card,
-  Table,
   Button,
   Space,
   Tag,
-  Modal,
-  Form,
-  Input,
-  InputNumber,
+  Row,
+  Col,
+  Spin,
+  Segmented,
   message,
-  Popconfirm,
-  Tooltip,
-  Empty,
 } from 'antd';
 import {
-  FolderOutlined,
   PlusOutlined,
   ReloadOutlined,
-  DeleteOutlined,
-  CloudDownloadOutlined,
   SyncOutlined,
-  DownOutlined,
-  SwapOutlined,
 } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
+import { Form } from 'antd';
 import dayjs from 'dayjs';
-import { codehubApi, type RepoInfo } from '@/api/codehub';
-
-function formatSize(bytes?: number): string {
-  if (!bytes) return '-';
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-}
+import { codehubApi, type RepoInfo, type RepoConfig } from '@/api/codehub';
+import RepoCard, { formatSize, getStatus } from '@/components/repos/RepoCard';
+import { CloneRepoModal, CheckoutModal } from '@/components/repos/Modals';
+import EmptyRepos from '@/components/repos/EmptyRepos';
 
 function Repos() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [cloneModalVisible, setCloneModalVisible] = useState(false);
   const [checkoutModalVisible, setCheckoutModalVisible] = useState(false);
   const [currentRepo, setCurrentRepo] = useState<string | null>(null);
+  const [expandedRepo, setExpandedRepo] = useState<string | null>(null);
   const [cloneForm] = Form.useForm();
   const [checkoutForm] = Form.useForm();
+  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  const [syncing, setSyncing] = useState(false);
 
   const { data, isLoading, refetch } = useQuery({
     queryKey: ['repos'],
@@ -50,9 +42,37 @@ function Repos() {
     retry: false,
   });
 
+  const { data: projectListData } = useQuery({
+    queryKey: ['repos-config-list'],
+    queryFn: () => codehubApi.listReposConfig() as Promise<{ repos: RepoConfig[]; activeRepoId: string | null }>,
+    retry: false,
+  });
+
+  const repos = data?.repos ?? [];
+
+  const projectOptions = (projectListData?.repos ?? []).map((r) => ({
+    value: r.projectId.toString(),
+    label: r.name || r.projectId.toString(),
+  }));
+
+  const cloneProjectId = Form.useWatch('projectId', cloneForm);
+
+  const { data: branchesData } = useQuery({
+    queryKey: ['repo-branches', cloneProjectId],
+    queryFn: () => codehubApi.getRepoBranches(cloneProjectId!),
+    enabled: !!cloneProjectId,
+    retry: false,
+  });
+
+  const branchOptions = (() => {
+    if (!branchesData) return [];
+    const branches: string[] = branchesData.branches || branchesData.data?.branches || [];
+    return branches.map((b: string) => ({ value: b, label: b }));
+  })();
+
   const cloneMutation = useMutation({
-    mutationFn: (data: { projectId: string; branch?: string; depth?: number }) =>
-      codehubApi.cloneRepo(data.projectId, { branch: data.branch, depth: data.depth }),
+    mutationFn: (d: { projectId: string; branch?: string; depth?: number }) =>
+      codehubApi.cloneRepo(d.projectId, { branch: d.branch, depth: d.depth }),
     onSuccess: () => {
       message.success('克隆成功');
       setCloneModalVisible(false);
@@ -67,22 +87,22 @@ function Repos() {
   const fetchMutation = useMutation({
     mutationFn: (projectId: string) => codehubApi.fetchRepo(projectId),
     onSuccess: () => {
-      message.success('拉取成功');
+      message.success('Fetch 成功');
       queryClient.invalidateQueries({ queryKey: ['repos'] });
     },
     onError: (err) => {
-      message.error(`拉取失败: ${err instanceof Error ? err.message : '未知错误'}`);
+      message.error(`Fetch 失败: ${err instanceof Error ? err.message : '未知错误'}`);
     },
   });
 
   const pullMutation = useMutation({
     mutationFn: (projectId: string) => codehubApi.pullRepo(projectId),
     onSuccess: () => {
-      message.success('更新成功');
+      message.success('Pull 成功');
       queryClient.invalidateQueries({ queryKey: ['repos'] });
     },
     onError: (err) => {
-      message.error(`更新失败: ${err instanceof Error ? err.message : '未知错误'}`);
+      message.error(`Pull 失败: ${err instanceof Error ? err.message : '未知错误'}`);
     },
   });
 
@@ -98,8 +118,8 @@ function Repos() {
   });
 
   const checkoutMutation = useMutation({
-    mutationFn: (data: { projectId: string; branch: string }) =>
-      codehubApi.checkoutBranch(data.projectId, data.branch),
+    mutationFn: (d: { projectId: string; branch: string }) =>
+      codehubApi.checkoutBranch(d.projectId, d.branch),
     onSuccess: () => {
       message.success('切换分支成功');
       setCheckoutModalVisible(false);
@@ -110,6 +130,27 @@ function Repos() {
       message.error(`切换分支失败: ${err instanceof Error ? err.message : '未知错误'}`);
     },
   });
+
+  const batchSync = useCallback(async () => {
+    if (repos.length === 0) return;
+    setSyncing(true);
+    try {
+      let success = 0;
+      let failed = 0;
+      for (const repo of repos) {
+        try {
+          await codehubApi.fetchRepo(repo.projectId);
+          success++;
+        } catch {
+          failed++;
+        }
+      }
+      message.success(`批量同步完成：成功 ${success} 个，失败 ${failed} 个`);
+      queryClient.invalidateQueries({ queryKey: ['repos'] });
+    } finally {
+      setSyncing(false);
+    }
+  }, [repos, queryClient]);
 
   const handleClone = async () => {
     try {
@@ -130,17 +171,41 @@ function Repos() {
     }
   };
 
-  const columns = [
+  const openCheckout = (repoId: string) => {
+    setCurrentRepo(repoId);
+    const repo = repos.find((r) => r.projectId === repoId);
+    checkoutForm.setFieldsValue({ branch: repo?.currentBranch ?? '' });
+    setCheckoutModalVisible(true);
+  };
+
+  const openMRs = (repoId: string) => {
+    navigate(`/mrs?repo=${encodeURIComponent(repoId)}`);
+  };
+
+  const tableColumns = [
     {
       title: '项目',
       dataIndex: 'projectId',
       key: 'projectId',
       render: (id: string, record: RepoInfo) => (
         <Space>
-          <FolderOutlined style={{ color: '#1677ff' }} />
+          <span style={{ color: 'var(--cr-brand-500)' }}>📁</span>
           <span style={{ fontFamily: 'monospace' }}>{record.projectName || id}</span>
         </Space>
       ),
+    },
+    {
+      title: '状态',
+      key: 'status',
+      width: 90,
+      render: (_: unknown, record: RepoInfo) => {
+        const s = getStatus(record.lastFetchedAt);
+        return (
+          <Tag color={s === 'online' ? 'success' : 'default'} style={{ margin: 0 }}>
+            {s === 'online' ? '在线' : '离线'}
+          </Tag>
+        );
+      },
     },
     {
       title: '当前分支',
@@ -148,9 +213,7 @@ function Repos() {
       key: 'currentBranch',
       width: 140,
       render: (branch: string) => (
-        <Tag color="blue">
-          <SwapOutlined /> {branch}
-        </Tag>
+        <Tag color="blue" style={{ margin: 0 }}>{branch}</Tag>
       ),
     },
     {
@@ -181,140 +244,227 @@ function Repos() {
       width: 280,
       render: (_: unknown, record: RepoInfo) => (
         <Space size={4}>
-          <Tooltip title="拉取更新">
-            <Button
-              type="text"
-              size="small"
-              icon={<CloudDownloadOutlined />}
-              loading={fetchMutation.isPending && fetchMutation.variables === record.projectId}
-              onClick={() => fetchMutation.mutate(record.projectId)}
-            >
-              Fetch
-            </Button>
-          </Tooltip>
-          <Tooltip title="Pull 更新">
-            <Button
-              type="text"
-              size="small"
-              icon={<DownOutlined />}
-              loading={pullMutation.isPending && pullMutation.variables === record.projectId}
-              onClick={() => pullMutation.mutate(record.projectId)}
-            >
-              Pull
-            </Button>
-          </Tooltip>
-          <Tooltip title="切换分支">
-            <Button
-              type="text"
-              size="small"
-              icon={<SwapOutlined />}
-              onClick={() => {
-                setCurrentRepo(record.projectId);
-                checkoutForm.setFieldsValue({ branch: record.currentBranch });
-                setCheckoutModalVisible(true);
-              }}
-            >
-              切换
-            </Button>
-          </Tooltip>
-          <Popconfirm
-            title="确定删除本地仓库？"
-            description="这将删除本地克隆的仓库目录，操作不可恢复。"
-            onConfirm={() => deleteMutation.mutate(record.projectId)}
+          <Button
+            type="text"
+            size="small"
+            icon={<SyncOutlined />}
+            loading={fetchMutation.isPending && fetchMutation.variables === record.projectId}
+            onClick={() => fetchMutation.mutate(record.projectId)}
           >
-            <Button type="text" size="small" danger icon={<DeleteOutlined />}>
-              删除
-            </Button>
-          </Popconfirm>
+            Fetch
+          </Button>
+          <Button
+            type="text"
+            size="small"
+            icon={<ReloadOutlined />}
+            loading={pullMutation.isPending && pullMutation.variables === record.projectId}
+            onClick={() => pullMutation.mutate(record.projectId)}
+          >
+            Pull
+          </Button>
+          <Button type="text" size="small" onClick={() => openCheckout(record.projectId)}>
+            切换
+          </Button>
+          <Button
+            type="text"
+            size="small"
+            danger
+            onClick={() => deleteMutation.mutate(record.projectId)}
+            loading={deleteMutation.isPending && deleteMutation.variables === record.projectId}
+          >
+            删除
+          </Button>
         </Space>
       ),
     },
   ];
 
-  return (
-    <>
-      <Card
-        title={
-          <Space>
-            <FolderOutlined />
-            <span>代码仓库</span>
-          </Space>
-        }
-        extra={
-          <Space>
-            <Button icon={<ReloadOutlined />} onClick={() => refetch()}>
-              刷新
-            </Button>
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => setCloneModalVisible(true)}>
-              克隆仓库
-            </Button>
-          </Space>
-        }
-      >
-        <Table
-          rowKey="projectId"
-          columns={columns}
-          dataSource={data?.repos ?? []}
-          loading={isLoading}
-          size="middle"
-          locale={{
-            emptyText: (
-              <Empty
-                image={Empty.PRESENTED_IMAGE_SIMPLE}
-                description={'暂无本地仓库，点击右上角「克隆仓库」开始'}
-                style={{ padding: 32 }}
-              />
-            ),
-          }}
-        />
-      </Card>
+  const renderListTable = () => (
+    <Card style={{ borderRadius: 14 }} bodyStyle={{ padding: 0 }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+        <thead>
+          <tr
+            style={{
+              background: 'var(--cr-bg-subtle)',
+              fontSize: 12,
+              color: 'var(--cr-ink-2)',
+              textTransform: 'uppercase',
+              letterSpacing: '0.02em',
+            }}
+          >
+            {tableColumns.map((col) => (
+              <th
+                key={col.key}
+                style={{
+                  textAlign: 'left',
+                  padding: '12px 16px',
+                  fontWeight: 600,
+                  borderBottom: '1px solid var(--cr-border)',
+                  width: (col as any).width,
+                }}
+              >
+                {(col as any).title}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {repos.map((repo) => (
+            <tr
+              key={repo.projectId}
+              style={{ borderBottom: '1px solid var(--cr-divider)' }}
+              onMouseEnter={(e) => {
+                (e.currentTarget as HTMLTableRowElement).style.background = 'rgba(59,107,255,0.04)';
+              }}
+              onMouseLeave={(e) => {
+                (e.currentTarget as HTMLTableRowElement).style.background = '';
+              }}
+            >
+              {tableColumns.map((col) => {
+                const dataIndex = (col as any).dataIndex;
+                const value = dataIndex ? (repo as any)[dataIndex] : undefined;
+                const render = (col as any).render;
+                return (
+                  <td key={col.key} style={{ padding: '10px 16px', verticalAlign: 'middle' }}>
+                    {render ? render(value, repo) : String(value ?? '')}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Card>
+  );
 
-      <Modal
-        title="克隆仓库"
+  return (
+    <div>
+      <div
+        className="cr-page-header"
+        style={{
+          marginBottom: 20,
+          padding: '24px 28px',
+          background:
+            'linear-gradient(135deg, rgba(59,107,255,0.08) 0%, rgba(14,165,164,0.05) 50%, rgba(255,255,255,0.9) 100%)',
+          borderRadius: 16,
+          border: '1px solid var(--cr-border)',
+          boxShadow: 'var(--cr-shadow-sm)',
+        }}
+      >
+        <div>
+          <h1 className="cr-page-title" style={{ margin: 0, fontSize: 26 }}>
+            <span style={{ marginRight: 8 }}>📦</span>
+            代码仓库管理
+          </h1>
+          <p className="cr-page-subtitle" style={{ marginTop: 6 }}>
+            管理本地克隆的 CodeHub 仓库，支持拉取更新、切换分支与批量同步
+          </p>
+        </div>
+        <Space size={10}>
+          <Button
+            icon={<SyncOutlined spin={syncing} />}
+            onClick={batchSync}
+            loading={syncing}
+            disabled={repos.length === 0}
+          >
+            批量同步
+          </Button>
+          <Button icon={<ReloadOutlined />} onClick={() => refetch()}>
+            刷新
+          </Button>
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={() => setCloneModalVisible(true)}
+          >
+            克隆仓库
+          </Button>
+        </Space>
+      </div>
+
+      {isLoading ? (
+        <div style={{ textAlign: 'center', padding: 80 }}>
+          <Spin size="large" />
+        </div>
+      ) : repos.length === 0 ? (
+        <Card style={{ borderRadius: 14 }} bodyStyle={{ padding: 0 }}>
+          <EmptyRepos onClone={() => setCloneModalVisible(true)} />
+        </Card>
+      ) : (
+        <>
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: 16,
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--cr-ink-1)' }}>
+                我的仓库
+              </span>
+              <Tag color="blue">{repos.length} 个仓库</Tag>
+            </div>
+            <Segmented
+              value={viewMode}
+              onChange={(val) => setViewMode(val as 'grid' | 'list')}
+              options={[
+                { label: '卡片网格', value: 'grid' },
+                { label: '列表视图', value: 'list' },
+              ]}
+            />
+          </div>
+
+          {viewMode === 'grid' ? (
+            <Row gutter={[16, 16]}>
+              {repos.map((repo) => (
+                <Col xs={24} sm={12} md={8} xl={6} key={repo.projectId}>
+                  <RepoCard
+                    repo={repo}
+                    isExpanded={expandedRepo === repo.projectId}
+                    onToggle={() =>
+                      setExpandedRepo((prev) => (prev === repo.projectId ? null : repo.projectId))
+                    }
+                    onFetch={(id) => fetchMutation.mutate(id)}
+                    onPull={(id) => pullMutation.mutate(id)}
+                    onCheckout={openCheckout}
+                    onDelete={(id) => deleteMutation.mutate(id)}
+                    onOpenMRs={openMRs}
+                    onViewReports={() => navigate('/reports')}
+                    isFetching={fetchMutation.isPending && fetchMutation.variables === repo.projectId}
+                    isPulling={pullMutation.isPending && pullMutation.variables === repo.projectId}
+                    isDeleting={deleteMutation.isPending && deleteMutation.variables === repo.projectId}
+                  />
+                </Col>
+              ))}
+            </Row>
+          ) : (
+            renderListTable()
+          )}
+        </>
+      )}
+
+      <CloneRepoModal
         open={cloneModalVisible}
         onOk={handleClone}
         onCancel={() => setCloneModalVisible(false)}
         confirmLoading={cloneMutation.isPending}
-        okText="克隆"
-        width={500}
-      >
-        <Form form={cloneForm} layout="vertical">
-          <Form.Item
-            label="项目 ID / 路径"
-            name="projectId"
-            rules={[{ required: true, message: '请输入项目 ID' }]}
-          >
-            <Input placeholder="例如: group/project-name" />
-          </Form.Item>
-          <Form.Item label="分支（可选）" name="branch">
-            <Input placeholder="留空则使用默认分支" />
-          </Form.Item>
-          <Form.Item label="克隆深度（可选）" name="depth">
-            <InputNumber min={1} placeholder="浅克隆深度，留空则完整克隆" style={{ width: '100%' }} />
-          </Form.Item>
-        </Form>
-      </Modal>
+        form={cloneForm}
+        projectOptions={projectOptions}
+        branchOptions={branchOptions}
+        cloneProjectId={cloneProjectId}
+        onValuesChange={() => {}}
+      />
 
-      <Modal
-        title="切换分支"
+      <CheckoutModal
         open={checkoutModalVisible}
         onOk={handleCheckout}
         onCancel={() => setCheckoutModalVisible(false)}
         confirmLoading={checkoutMutation.isPending}
-        okText="切换"
-        width={400}
-      >
-        <Form form={checkoutForm} layout="vertical">
-          <Form.Item
-            label="目标分支"
-            name="branch"
-            rules={[{ required: true, message: '请输入分支名' }]}
-          >
-            <Input placeholder="分支名称" />
-          </Form.Item>
-        </Form>
-      </Modal>
-    </>
+        form={checkoutForm}
+      />
+    </div>
   );
 }
 

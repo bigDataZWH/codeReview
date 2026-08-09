@@ -8,3 +8,17 @@ dist/
 *.tsbuildinfo
 web/vite.config.d.ts
 web/vite.config.js
+
+# 配置文件（包含敏感信息）
+code-review-pkg/.codehub-config.json
+code-review-pkg/.opencode-manager.json
+
+# 测试工作区
+code-review-pkg/test-workspace/
+
+# Trae 规划文档
+.trae/
+
+# IDE 配置
+.vscode/
+.idea/

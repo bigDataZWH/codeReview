@@ -1,5 +1,69 @@
 @import "tailwindcss";
 
+/* ============================================================
+   CodeReview · Visual System
+   A quiet-but-confident workspace palette tuned for long
+   code-review sessions: midnight-navy canvas + electric-teal
+   accents, cool grays for structure, and warm severity tones
+   for signal.  Everything is driven by CSS custom properties
+   so antd's token override and plain CSS stay in sync.
+   ============================================================ */
+
+:root {
+  /* Canvas */
+  --cr-bg: #f4f6fb;
+  --cr-bg-elev: #ffffff;
+  --cr-bg-subtle: #eef2f9;
+
+  /* Ink */
+  --cr-ink-1: #0f172a;      /* primary text */
+  --cr-ink-2: #334155;      /* secondary text */
+  --cr-ink-3: #64748b;      /* tertiary text */
+  --cr-ink-4: #94a3b8;      /* placeholder / muted */
+
+  /* Structure */
+  --cr-border: #e2e8f0;
+  --cr-border-strong: #cbd5e1;
+  --cr-divider: #eef2f9;
+
+  /* Brand: midnight-navy + electric-teal */
+  --cr-brand-50:  #eef5ff;
+  --cr-brand-100: #d9e8ff;
+  --cr-brand-300: #7ba6ff;
+  --cr-brand-500: #3b6bff;
+  --cr-brand-600: #2a54e6;
+  --cr-brand-700: #1e3fb8;
+  --cr-brand-900: #0b1a4d;
+
+  --cr-accent-500: #0ea5a4;   /* teal */
+  --cr-accent-600: #0d9488;
+  --cr-accent-50:  #ecfdf5;
+
+  /* Severity (kept close to prior meanings, tuned) */
+  --cr-sev-critical: #dc2626;
+  --cr-sev-high:     #ea580c;
+  --cr-sev-medium:   #ca8a04;
+  --cr-sev-low:      #2563eb;
+  --cr-sev-info:     #0f766e;
+
+  /* Sidebar */
+  --cr-sider-top:  #0b1228;
+  --cr-sider-bottom: #131f44;
+  --cr-sider-ink:  #c8d1e8;
+  --cr-sider-ink-muted: #7a86a8;
+  --cr-sider-active-bg: rgba(59, 107, 255, 0.18);
+  --cr-sider-active-border: #3b6bff;
+
+  /* Radii & shadows */
+  --cr-radius-sm: 6px;
+  --cr-radius-md: 10px;
+  --cr-radius-lg: 14px;
+  --cr-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 3px rgba(15, 23, 42, 0.06);
+  --cr-shadow-md: 0 4px 12px rgba(15, 23, 42, 0.06), 0 2px 4px rgba(15, 23, 42, 0.04);
+  --cr-shadow-lg: 0 12px 28px rgba(15, 23, 42, 0.10), 0 4px 10px rgba(15, 23, 42, 0.06);
+  --cr-shadow-glow: 0 0 0 1px rgba(59, 107, 255, 0.25), 0 8px 22px rgba(59, 107, 255, 0.22);
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -14,69 +78,455 @@ body,
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue',
-    Arial, sans-serif;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', Roboto, 'Helvetica Neue', Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background-color: #f5f5f5;
+  color: var(--cr-ink-1);
+  background:
+    radial-gradient(1200px 600px at 85% -10%, rgba(59, 107, 255, 0.08), transparent 60%),
+    radial-gradient(900px 500px at -10% 110%, rgba(14, 165, 164, 0.06), transparent 60%),
+    var(--cr-bg);
+  font-feature-settings: 'cv11', 'ss01', 'ss03';
 }
 
+/* ---------- Scrollbar ---------- */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
 }
-
 ::-webkit-scrollbar-track {
-  background: #f1f1f1;
-  border-radius: 4px;
+  background: transparent;
 }
-
 ::-webkit-scrollbar-thumb {
-  background: #c1c1c1;
-  border-radius: 4px;
+  background: #cbd5e1;
+  border-radius: 10px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  transition: background-color 0.15s ease;
 }
-
 ::-webkit-scrollbar-thumb:hover {
-  background: #a8a8a8;
+  background: #94a3b8;
+  background-clip: padding-box;
+  border: 2px solid transparent;
 }
 
+/* ---------- Code diff (unchanged semantics, refined tone) ---------- */
 .code-diff-added {
-  background-color: #e6ffec;
+  background-color: #e6fbf0;
+  border-left: 2px solid #10b981;
 }
-
 .code-diff-removed {
-  background-color: #ffebe9;
+  background-color: #fdecec;
+  border-left: 2px solid #ef4444;
 }
-
 .code-diff-neutral {
-  background-color: #f6f8fa;
+  background-color: #f6f8fb;
 }
 
-/* ===== 响应式布局：窄屏（<768px）适配 ===== */
-/* 窄屏下减小主内容区 padding，让表格/卡片更舒展 */
+/* ---------- Ant Design overrides ---------- */
+
+/* Layout */
+.ant-layout {
+  background: transparent !important;
+}
+.ant-layout-content {
+  margin: 20px !important;
+  padding: 0 !important;
+  max-width: 100%;
+}
+
+/* Card: the hero surface of the dashboard */
+.ant-card {
+  background: rgba(255, 255, 255, 0.85) !important;
+  backdrop-filter: saturate(180%) blur(8px);
+  border: 1px solid var(--cr-border) !important;
+  border-radius: var(--cr-radius-lg) !important;
+  box-shadow: var(--cr-shadow-sm) !important;
+  transition: box-shadow 0.22s ease, transform 0.22s ease, border-color 0.22s ease;
+}
+.ant-card:hover {
+  box-shadow: var(--cr-shadow-md) !important;
+  border-color: #d4ddeb !important;
+}
+.ant-card-head {
+  border-bottom: 1px solid var(--cr-divider) !important;
+  padding: 14px 20px !important;
+  min-height: 0 !important;
+}
+.ant-card-head-title {
+  font-weight: 600 !important;
+  font-size: 14px !important;
+  letter-spacing: 0.01em;
+  color: var(--cr-ink-1) !important;
+}
+.ant-card-extra {
+  padding: 0 !important;
+}
+.ant-card-body {
+  padding: 20px !important;
+}
+
+/* Statistic */
+.ant-statistic-title {
+  color: var(--cr-ink-3) !important;
+  font-size: 12px !important;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.ant-statistic-content {
+  font-weight: 600 !important;
+}
+.ant-statistic-content-value {
+  font-family: 'Inter', ui-sans-serif, system-ui, sans-serif !important;
+  font-feature-settings: 'tnum' 1;
+  letter-spacing: -0.01em;
+}
+
+/* Buttons */
+.ant-btn {
+  border-radius: 8px !important;
+  font-weight: 500 !important;
+  transition: all 0.18s ease !important;
+}
+.ant-btn-primary {
+  background: linear-gradient(135deg, var(--cr-brand-500), var(--cr-brand-700)) !important;
+  box-shadow: 0 1px 2px rgba(59, 107, 255, 0.2), 0 2px 6px rgba(59, 107, 255, 0.18) !important;
+  border: none !important;
+}
+.ant-btn-primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(59, 107, 255, 0.25), 0 6px 16px rgba(59, 107, 255, 0.25) !important;
+  filter: brightness(1.05);
+}
+.ant-btn-primary:active {
+  transform: translateY(0);
+}
+.ant-btn-default {
+  border-color: var(--cr-border-strong) !important;
+  background: #fff !important;
+}
+.ant-btn-default:hover {
+  border-color: var(--cr-brand-500) !important;
+  color: var(--cr-brand-600) !important;
+}
+.ant-btn-text {
+  border-radius: 6px !important;
+}
+
+/* Tag */
+.ant-tag {
+  border-radius: 999px !important;
+  padding: 2px 10px !important;
+  font-weight: 500 !important;
+  font-size: 12px !important;
+  border: 1px solid transparent !important;
+}
+
+/* Table */
+.ant-table {
+  border-radius: var(--cr-radius-md) !important;
+  overflow: hidden;
+}
+.ant-table-thead > tr > th {
+  background: var(--cr-bg-subtle) !important;
+  color: var(--cr-ink-2) !important;
+  font-weight: 600 !important;
+  font-size: 12px !important;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--cr-border) !important;
+}
+.ant-table-tbody > tr > td {
+  border-bottom: 1px solid var(--cr-divider) !important;
+}
+.ant-table-tbody > tr:hover > td {
+  background: rgba(59, 107, 255, 0.04) !important;
+}
+.ant-table-cell {
+  font-size: 13px !important;
+}
+
+/* Input / Select */
+.ant-input,
+.ant-input-affix-wrapper,
+.ant-select-selector {
+  border-radius: 8px !important;
+  border-color: var(--cr-border-strong) !important;
+  transition: all 0.15s ease !important;
+}
+.ant-input:focus,
+.ant-input-affix-wrapper-focused,
+.ant-select-focused .ant-select-selector {
+  border-color: var(--cr-brand-500) !important;
+  box-shadow: 0 0 0 3px rgba(59, 107, 255, 0.14) !important;
+}
+
+/* Segmented */
+.ant-segmented {
+  background: var(--cr-bg-subtle) !important;
+  padding: 4px !important;
+  border-radius: 10px !important;
+}
+.ant-segmented-item-selected {
+  background: #fff !important;
+  box-shadow: var(--cr-shadow-sm) !important;
+  color: var(--cr-brand-600) !important;
+}
+
+/* Tabs */
+.ant-tabs-tab {
+  border-radius: 8px !important;
+  padding: 8px 16px !important;
+  color: var(--cr-ink-3) !important;
+  font-weight: 500 !important;
+  transition: all 0.15s ease;
+}
+.ant-tabs-tab:hover {
+  color: var(--cr-brand-600) !important;
+}
+.ant-tabs-tab-active .ant-tabs-tab-btn,
+.ant-tabs-tab-active {
+  color: var(--cr-brand-600) !important;
+  font-weight: 600 !important;
+}
+.ant-tabs-ink-bar {
+  background: var(--cr-brand-500) !important;
+  height: 3px !important;
+  border-radius: 3px;
+}
+
+/* Modal */
+.ant-modal-content {
+  border-radius: var(--cr-radius-lg) !important;
+  box-shadow: var(--cr-shadow-lg) !important;
+}
+
+/* Alert */
+.ant-alert {
+  border-radius: var(--cr-radius-md) !important;
+  border: 1px solid var(--cr-border) !important;
+  background: rgba(255, 255, 255, 0.75) !important;
+}
+
+/* Breadcrumb */
+.ant-breadcrumb {
+  font-size: 13px !important;
+  color: var(--cr-ink-4) !important;
+}
+.ant-breadcrumb a,
+.ant-breadcrumb-link {
+  color: var(--cr-ink-3) !important;
+  font-weight: 500;
+}
+.ant-breadcrumb-separator {
+  color: var(--cr-ink-4) !important;
+}
+
+/* Badge dot glow */
+.ant-badge-dot {
+  box-shadow: 0 0 0 3px rgba(59, 107, 255, 0.18);
+}
+
+/* ---------- Sidebar menu (dark, custom) ---------- */
+.cr-sider-menu.ant-menu {
+  background: transparent !important;
+  color: var(--cr-sider-ink) !important;
+}
+.cr-sider-menu .ant-menu-item {
+  margin: 4px 0 !important;
+  height: 42px !important;
+  line-height: 42px !important;
+  border-radius: 10px !important;
+  padding: 0 14px !important;
+  color: var(--cr-sider-ink) !important;
+  font-size: 13.5px !important;
+  font-weight: 500 !important;
+  transition: all 0.18s ease !important;
+  position: relative;
+}
+.cr-sider-menu .ant-menu-item .ant-menu-item-icon,
+.cr-sider-menu .ant-menu-item .anticon {
+  font-size: 17px !important;
+  color: var(--cr-sider-ink-muted) !important;
+  transition: color 0.18s ease;
+}
+.cr-sider-menu .ant-menu-item:hover {
+  background: rgba(255, 255, 255, 0.05) !important;
+  color: #fff !important;
+}
+.cr-sider-menu .ant-menu-item:hover .ant-menu-item-icon,
+.cr-sider-menu .ant-menu-item:hover .anticon {
+  color: #dce6ff !important;
+}
+.cr-sider-menu .ant-menu-item-selected {
+  background: var(--cr-sider-active-bg) !important;
+  color: #fff !important;
+  box-shadow: inset 0 0 0 1px rgba(59, 107, 255, 0.35),
+    0 4px 14px rgba(59, 107, 255, 0.22) !important;
+}
+.cr-sider-menu .ant-menu-item-selected::before {
+  content: '';
+  position: absolute;
+  left: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 20px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #3b6bff, #0ea5a4);
+}
+.cr-sider-menu .ant-menu-item-selected .ant-menu-item-icon,
+.cr-sider-menu .ant-menu-item-selected .anticon {
+  color: #7ba6ff !important;
+}
+
+/* ---------- Header top-bar refinements ---------- */
+.cr-header {
+  height: 68px !important;
+  padding: 0 24px !important;
+  background: rgba(255, 255, 255, 0.78) !important;
+  backdrop-filter: saturate(180%) blur(14px);
+  -webkit-backdrop-filter: saturate(180%) blur(14px);
+  border-bottom: 1px solid var(--cr-border) !important;
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.03) !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+}
+.cr-header-title {
+  font-weight: 600;
+  color: var(--cr-ink-1);
+  font-size: 14px;
+  letter-spacing: 0.01em;
+}
+.cr-header-kbd {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--cr-bg-subtle);
+  border: 1px solid var(--cr-border);
+  font-size: 11px;
+  color: var(--cr-ink-3);
+  font-weight: 500;
+}
+.cr-repo-select .ant-select-selector {
+  border-radius: 10px !important;
+  border-color: var(--cr-border-strong) !important;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04) !important;
+  background: #fff !important;
+}
+.cr-repo-select .ant-select-selection-item {
+  font-weight: 600 !important;
+  color: var(--cr-ink-1) !important;
+}
+
+/* ============================================================
+   Page-level utility classes
+   ============================================================ */
+
+/* Page header: used on each main page to give a title + subtitle block */
+.cr-page-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  margin-bottom: 20px;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.cr-page-title {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--cr-ink-1);
+  margin: 0;
+}
+.cr-page-subtitle {
+  font-size: 13px;
+  color: var(--cr-ink-3);
+  margin-top: 4px;
+}
+
+/* Elevated stat card (Dashboard / Reports hero metrics) */
+.cr-metric-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--cr-radius-lg);
+  padding: 20px 22px !important;
+  transition: transform 0.25s ease, box-shadow 0.25s ease;
+}
+.cr-metric-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(600px 120px at 0% 0%, rgba(59, 107, 255, 0.09), transparent 60%);
+  pointer-events: none;
+}
+.cr-metric-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--cr-shadow-md) !important;
+}
+
+/* Accent bar to the left of a metric card */
+.cr-metric-accent {
+  position: absolute;
+  left: 0;
+  top: 14px;
+  bottom: 14px;
+  width: 3px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, var(--cr-brand-500), var(--cr-accent-500));
+}
+.cr-metric-accent.critical { background: linear-gradient(180deg, #ef4444, #b91c1c); }
+.cr-metric-accent.high     { background: linear-gradient(180deg, #f97316, #c2410c); }
+.cr-metric-accent.medium   { background: linear-gradient(180deg, #eab308, #a16207); }
+.cr-metric-accent.low      { background: linear-gradient(180deg, #3b82f6, #1d4ed8); }
+.cr-metric-accent.info     { background: linear-gradient(180deg, #10b981, #047857); }
+
+/* Severity pill (refined tag) */
+.cr-severity-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.cr-severity-pill.critical { background: #fee2e2; color: #b91c1c; }
+.cr-severity-pill.high     { background: #ffedd5; color: #c2410c; }
+.cr-severity-pill.medium   { background: #fef3c7; color: #a16207; }
+.cr-severity-pill.low      { background: #dbeafe; color: #1d4ed8; }
+.cr-severity-pill.info     { background: #ccfbf1; color: #0f766e; }
+
+/* Subtle section frame for e.g. "fast stats" / detail blocks */
+.cr-subframe {
+  background: linear-gradient(180deg, #ffffff, #fbfcfe);
+  border: 1px solid var(--cr-border);
+  border-radius: var(--cr-radius-md);
+  padding: 16px;
+}
+
+/* ============================================================
+   Responsive (carried over from previous rules, refined)
+   ============================================================ */
 @media (max-width: 767px) {
-  /* 主内容区 padding 收紧 */
   .ant-layout-content {
-    margin: 8px !important;
+    margin: 12px !important;
   }
-
-  /* 卡片内边距收紧 */
   .ant-card-body {
-    padding: 12px;
+    padding: 14px !important;
   }
-
-  /* 表格单元格内边距收紧，便于窄屏展示更多内容 */
   .ant-table-tbody > tr > td,
   .ant-table-thead > tr > th {
-    padding: 8px 6px !important;
+    padding: 8px 8px !important;
   }
-
-  /* 让 antd Tabs 在窄屏下也能横向滚动而非挤压 */
   .ant-tabs-nav {
     overflow-x: auto;
   }
-
-  /* MRDetail diff 区左右两栏在窄屏下改为纵向堆叠 */
   .mr-detail-diff-layout {
     flex-direction: column;
   }
@@ -84,16 +534,30 @@ body {
     width: 100% !important;
     margin-bottom: 12px;
   }
-
-  /* 顶部工具栏（Card extra）在窄屏下换行 */
   .ant-card-extra {
     flex-wrap: wrap;
   }
+  .cr-page-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
 }
 
-/* 中等屏（768px~1023px）：略减 padding */
 @media (min-width: 768px) and (max-width: 1023px) {
   .ant-layout-content {
-    margin: 12px !important;
+    margin: 16px !important;
+  }
+}
+
+/* ============================================================
+   Motion preferences
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  .ant-card,
+  .ant-btn,
+  .cr-metric-card,
+  * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
   }
 }

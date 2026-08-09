@@ -12,6 +12,11 @@ export interface CodeHubConfig {
   };
 }
 
+export interface OpencodeManagerConfig {
+  startCommand: string;
+  workDir: string;
+}
+
 export interface CodeHubMR {
   id: number;
   iid: number;
@@ -196,6 +201,57 @@ export interface ByRepoItem {
   interceptions: number;
 }
 
+// ===== 环境检测与一键配置 =====
+export interface EnvironmentHealth {
+  ok: boolean;
+  opencode: {
+    installed: boolean;
+    version?: string;
+    error?: string;
+  };
+  nodejs: {
+    version: string;
+    supported: boolean;
+  };
+  ports: {
+    opencode: { port: number; available: boolean };
+    api: { port: number; available: boolean };
+    web: { port: number; available: boolean };
+  };
+  config: {
+    codehubConfigured: boolean;
+    opencodeConfigured: boolean;
+    reviewConfigured: boolean;
+  };
+}
+
+export interface QuickConfigureInput {
+  codehub: {
+    name: string;
+    baseUrl: string;
+    token: string;
+    projectId: string;
+  };
+  reviewConfig?: {
+    defaultStrength?: 'lenient' | 'standard' | 'strict';
+    securityReview?: boolean;
+    defaultLanguage?: string;
+  };
+  opencodeManager?: {
+    startCommand: string;
+    workDir: string;
+  };
+}
+
+export interface StartAllResult {
+  ok: boolean;
+  services: {
+    opencode: { started: boolean; pid?: number; error?: string };
+    api: { started: boolean; pid?: number; error?: string };
+    web: { started: boolean; pid?: number; error?: string };
+  };
+}
+
 export const codehubApi = {
   getConfig: () => api.get('/codehub/config').then((r) => r.data),
   saveConfig: (config: Partial<CodeHubConfig>) =>
@@ -290,7 +346,16 @@ export const codehubApi = {
   saveOpencodeConfig: (config: unknown) =>
     api.put('/opencode/config', config).then((r) => r.data),
 
-  startOpencodeServe: (options?: { hostname?: string; port?: number }) =>
+  getOpencodeManagerConfig: () =>
+    api.get('/opencode/manager-config').then((r) => r.data),
+
+  saveOpencodeManagerConfig: (config: Partial<OpencodeManagerConfig>) =>
+    api.put('/opencode/manager-config', config).then((r) => r.data),
+
+  startService: (service: 'backend' | 'frontend') =>
+    api.post('/services/start', { service }).then((r) => r.data),
+
+  startOpencodeServe: (options?: { hostname?: string; port?: number; commandTemplate?: string; workDir?: string }) =>
     api.post('/opencode/serve/start', options).then((r) => r.data),
 
   stopOpencodeServe: () =>
@@ -395,4 +460,17 @@ export const codehubApi = {
 
   // 按仓库聚合
   getReportsByRepo: () => api.get('/reports/by-repo').then((r) => r.data),
+
+  // ===== 环境检测与一键配置 =====
+  getOpencodeHealth: () =>
+    api.get('/opencode/health').then((r) => r.data),
+
+  quickConfigure: (config: QuickConfigureInput) =>
+    api.post('/opencode/quick-configure', config).then((r) => r.data),
+
+  startAllServices: () =>
+    api.post('/services/start-all').then((r) => r.data),
+
+  getServiceStatus: () =>
+    api.get('/services/status').then((r) => r.data),
 };

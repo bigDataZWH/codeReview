@@ -222,6 +222,15 @@ function Reports() {
 
   return (
     <div>
+      <div className="cr-page-header">
+        <div>
+          <h1 className="cr-page-title">报表</h1>
+          <p className="cr-page-subtitle">
+            代码审查度量与趋势分析，洞察团队代码质量与规则命中情况
+          </p>
+        </div>
+      </div>
+
       {/* 顶部 4 张指标卡 */}
       <Row gutter={[16, 16]}>
         <Col xs={24} sm={12} md={6}>

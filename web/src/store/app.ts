@@ -1,28 +1,65 @@
 import { create } from 'zustand';
 import { codehubApi, type CodeHubConfig, type RepoConfig } from '@/api/codehub';
 
+export interface NotificationItem {
+  id: string;
+  type: 'info' | 'success' | 'warning' | 'error';
+  title: string;
+  message: string;
+  timestamp: number;
+  read: boolean;
+}
+
 interface AppState {
   config: CodeHubConfig | null;
   isConfigured: boolean;
   sidebarCollapsed: boolean;
   currentMR: number | null;
 
-  // 多仓配置相关状态
   activeRepoId: string | null;
   reposConfig: RepoConfig[];
+
+  themeMode: 'light' | 'dark';
+  notifications: NotificationItem[];
+  unreadCount: number;
 
   setConfig: (config: CodeHubConfig | null) => void;
   setIsConfigured: (configured: boolean) => void;
   toggleSidebar: () => void;
   setCurrentMR: (mrIid: number | null) => void;
 
-  // 多仓配置操作
   setActiveRepoId: (id: string | null) => void;
   setReposConfig: (repos: RepoConfig[]) => void;
   loadReposConfig: () => Promise<void>;
+
+  setThemeMode: (mode: 'light' | 'dark') => void;
+  toggleTheme: () => void;
+
+  markAllRead: () => void;
+  addNotification: (item: NotificationItem) => void;
 }
 
-export const useAppStore = create<AppState>((set) => ({
+const STORAGE_KEY_THEME = 'cr-theme-mode';
+
+function loadThemeFromStorage(): 'light' | 'dark' {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY_THEME);
+    if (stored === 'light' || stored === 'dark') return stored;
+  } catch {
+    // ignore
+  }
+  return 'light';
+}
+
+function persistTheme(mode: 'light' | 'dark') {
+  try {
+    localStorage.setItem(STORAGE_KEY_THEME, mode);
+  } catch {
+    // ignore
+  }
+}
+
+export const useAppStore = create<AppState>((set, get) => ({
   config: null,
   isConfigured: false,
   sidebarCollapsed: false,
@@ -31,6 +68,10 @@ export const useAppStore = create<AppState>((set) => ({
   activeRepoId: null,
   reposConfig: [],
 
+  themeMode: loadThemeFromStorage(),
+  notifications: [],
+  unreadCount: 0,
+
   setConfig: (config) => set({ config }),
   setIsConfigured: (configured) => set({ isConfigured: configured }),
   toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
@@ -38,7 +79,6 @@ export const useAppStore = create<AppState>((set) => ({
 
   setActiveRepoId: (id) => set({ activeRepoId: id }),
   setReposConfig: (repos) => set({ reposConfig: repos }),
-  // 从后端拉取多仓配置及当前激活仓库，失败时保持空配置不抛出
   loadReposConfig: async () => {
     try {
       const data = await codehubApi.listReposConfig();
@@ -50,4 +90,25 @@ export const useAppStore = create<AppState>((set) => ({
       // 后端不可用或未配置时静默处理
     }
   },
+
+  setThemeMode: (mode) => {
+    persistTheme(mode);
+    set({ themeMode: mode });
+  },
+  toggleTheme: () => {
+    const next = get().themeMode === 'light' ? 'dark' : 'light';
+    persistTheme(next);
+    set({ themeMode: next });
+  },
+
+  markAllRead: () =>
+    set((state) => ({
+      notifications: state.notifications.map((n) => ({ ...n, read: true })),
+      unreadCount: 0,
+    })),
+  addNotification: (item) =>
+    set((state) => ({
+      notifications: [item, ...state.notifications],
+      unreadCount: state.unreadCount + (item.read ? 0 : 1),
+    })),
 }));

@@ -1,4 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { spawn, type ChildProcess } from 'node:child_process';
 import type { Finding, RepoConfig } from './types.js';
 import { CodeHubClient } from './codehub-client.js';
 import { RepoManager, DEFAULT_REPO_BASE_DIR } from './repo-manager.js';
@@ -12,6 +15,11 @@ import { createMultiRepoManager, type MultiRepoManager } from './multi-repo-mana
 import { publishFindingsAsIssue, saveReportToFile } from './codehub-publisher.js';
 import { loadOpencodeConfig, saveOpencodeConfig } from './opencode-config-manager.js';
 import type { OpencodeConfig } from './opencode-config-manager.js';
+import {
+  loadOpencodeManagerConfig,
+  saveOpencodeManagerConfig,
+  type OpencodeManagerConfig,
+} from './opencode-manager-config.js';
 import { OpencodeProcessManager } from './opencode-process-manager.js';
 import { runReviewViaOpencode, historyStore } from './review-runner.js';
 import { createMRSyncScheduler, type MRSyncScheduler } from './mr-sync-scheduler.js';
@@ -145,6 +153,7 @@ async function handleOpencodeRoutes(
   route: ParsedRoute,
   opencodeProcessManager: OpencodeProcessManager | undefined,
   opencodeConfigPath: string | undefined,
+  resolvedConfigPath: string,
 ): Promise<boolean> {
   if (!opencodeProcessManager) {
     sendJson(res, 500, { ok: false, error: 'opencode process manager not configured' });
@@ -155,6 +164,36 @@ async function handleOpencodeRoutes(
   const subResource = route.segments[4];
 
   try {
+    // GET /api/v1/opencode/manager-config
+    if (resource === 'manager-config' && route.method === 'GET') {
+      const config = loadOpencodeManagerConfig();
+      sendJson(res, 200, { ok: true, config });
+      return true;
+    }
+
+    // PUT /api/v1/opencode/manager-config
+    if (resource === 'manager-config' && route.method === 'PUT') {
+      try {
+        const bodyText = await readBody(req);
+        const body = JSON.parse(bodyText) as { startCommand?: string; workDir?: string };
+        if (body.startCommand === undefined && body.workDir === undefined) {
+          sendJson(res, 400, { ok: false, error: 'at least one of startCommand or workDir is required' });
+          return true;
+        }
+        const existing = loadOpencodeManagerConfig();
+        const merged: OpencodeManagerConfig = {
+          startCommand: body.startCommand ?? existing.startCommand,
+          workDir: body.workDir ?? existing.workDir,
+        };
+        const saved = saveOpencodeManagerConfig(merged);
+        sendJson(res, 200, { ok: true, config: saved });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        sendJson(res, 400, { ok: false, error: message });
+      }
+      return true;
+    }
+
     // GET /api/v1/opencode/config
     if (resource === 'config' && route.method === 'GET') {
       const config = loadOpencodeConfig(opencodeConfigPath);
@@ -173,17 +212,30 @@ async function handleOpencodeRoutes(
 
     // POST /api/v1/opencode/serve/start
     if (resource === 'serve' && subResource === 'start' && route.method === 'POST') {
-      let opts: { hostname?: string; port?: number } = {};
+      let opts: { hostname?: string; port?: number; commandTemplate?: string; workDir?: string } = {};
       try {
         const bodyText = await readBody(req);
         if (bodyText) {
-          const body = JSON.parse(bodyText) as { hostname?: string; port?: number };
+          const body = JSON.parse(bodyText) as {
+            hostname?: string;
+            port?: number;
+            commandTemplate?: string;
+            workDir?: string;
+          };
           opts = body;
         }
       } catch {
         // 忽略 body 解析错误，使用默认值
       }
-      const result = await opencodeProcessManager.start(opts);
+      const managerConfig = loadOpencodeManagerConfig();
+      const result = await opencodeProcessManager.start({
+        hostname: opts.hostname,
+        port: opts.port,
+        commandTemplate: opts.commandTemplate ?? managerConfig.startCommand,
+        workDir: opts.workDir ?? managerConfig.workDir,
+        opencodeConfigPath,
+        codehubConfigPath: resolvedConfigPath,
+      });
       sendJson(res, 200, result);
       return true;
     }
@@ -258,7 +310,72 @@ export function createCodeHubRoutesHandler(options: CodeHubRoutesOptions = {}) {
       route.segments[2] === 'opencode';
 
     if (isOpencodePath) {
-      return handleOpencodeRoutes(req, res, route, opencodeProcessManager, opencodeConfigPath);
+      return handleOpencodeRoutes(req, res, route, opencodeProcessManager, opencodeConfigPath, resolvedConfigPath);
+    }
+
+    // services 路由前缀：/api/v1/services/*
+    const isServicesPath =
+      route.segments.length >= 3 &&
+      route.segments[0] === 'api' &&
+      route.segments[1] === 'v1' &&
+      route.segments[2] === 'services';
+
+    if (isServicesPath) {
+      const serviceResource = route.segments[3]; // 'start'
+      if (serviceResource === 'start' && route.method === 'POST') {
+        try {
+          const bodyText = await readBody(req);
+          const body = bodyText ? (JSON.parse(bodyText) as { service?: 'backend' | 'frontend' }) : {};
+          const serviceName = body.service;
+          if (!serviceName || (serviceName !== 'backend' && serviceName !== 'frontend')) {
+            sendJson(res, 400, { ok: false, error: 'service must be "backend" or "frontend"' });
+            return true;
+          }
+          // 后端服务使用 node dist/cli.js serve；前端服务使用 npm run dev
+          const isBackend = serviceName === 'backend';
+          const command = isBackend ? 'node dist/cli.js serve' : 'npm run dev';
+          // 智能检测项目根目录：若当前 cwd 已含 dist/cli.js 则直接使用，否则向 code-review-pkg/web 子目录查找
+          const projectRoot = process.cwd();
+          const backendCwd = existsSync(resolve(projectRoot, 'dist', 'cli.js'))
+            ? projectRoot
+            : resolve(projectRoot, 'code-review-pkg');
+          const frontendCwd = existsSync(resolve(projectRoot, 'web', 'package.json'))
+            ? resolve(projectRoot, 'web')
+            : resolve(projectRoot, '..', 'web');
+          const cwd = isBackend ? backendCwd : frontendCwd;
+          let child: ChildProcess;
+          if (isBackend) {
+            // 后端：node dist/cli.js serve（不依赖 npm 脚本）
+            child = spawn(process.execPath, ['dist/cli.js', 'serve'], {
+              stdio: ['ignore', 'pipe', 'pipe'],
+              cwd,
+            });
+          } else {
+            // 前端：npm run dev（Windows 上 npm 实际为 npm.cmd）
+            const npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+            child = spawn(npmBin, ['run', 'dev'], {
+              stdio: ['ignore', 'pipe', 'pipe'],
+              cwd,
+            });
+          }
+          // 监听 spawn error 事件，避免 unhandled error 导致进程崩溃
+          child.on('error', (err: NodeJS.ErrnoException) => {
+            console.error(`[services/start] Failed to spawn '${command}' in '${cwd}': ${err.message}`);
+          });
+          if (child.pid) {
+            sendJson(res, 200, { ok: true, pid: child.pid, command, service: serviceName, cwd });
+          } else {
+            sendJson(res, 500, { ok: false, error: `Failed to start ${serviceName} service` });
+          }
+          return true;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          sendJson(res, 500, { ok: false, error: message });
+          return true;
+        }
+      }
+      sendJson(res, 404, { ok: false, error: `Not found: ${route.method} /${route.segments.join('/')}` });
+      return true;
     }
 
     const isCodeHubPath =
@@ -276,6 +393,21 @@ export function createCodeHubRoutesHandler(options: CodeHubRoutesOptions = {}) {
     const subResource = route.segments[5];
 
     try {
+      // Config test endpoint (must be checked before generic config POST handler)
+      if (resource === 'config' && id === 'test') {
+        if (route.method === 'POST') {
+          try {
+            const client = getClient(route.query.repoId);
+            const ok = await client.testConnection();
+            sendJson(res, 200, { ok, message: ok ? 'Connection successful' : 'Connection failed' });
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            sendJson(res, 200, { ok: false, message });
+          }
+          return true;
+        }
+      }
+
       // Config endpoints
       if (resource === 'config') {
         if (route.method === 'GET') {
@@ -320,21 +452,6 @@ export function createCodeHubRoutesHandler(options: CodeHubRoutesOptions = {}) {
             repoBaseDir: activeRepo?.repoDir ?? '',
           };
           sendJson(res, 200, { ok: true, config: safeConfig });
-          return true;
-        }
-      }
-
-      // Config test endpoint
-      if (resource === 'config' && subResource === 'test') {
-        if (route.method === 'POST') {
-          try {
-            const client = getClient(route.query.repoId);
-            const ok = await client.testConnection();
-            sendJson(res, 200, { ok, message: ok ? 'Connection successful' : 'Connection failed' });
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            sendJson(res, 200, { ok: false, message });
-          }
           return true;
         }
       }

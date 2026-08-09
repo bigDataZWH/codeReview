@@ -29,6 +29,7 @@ import type { Finding, PipelineResult } from './types.js';
 import { createCodeHubRoutesHandler } from './codehub-routes.js';
 import { createReportsRoutesHandler } from './reports-routes.js';
 import { OpencodeProcessManager } from './opencode-process-manager.js';
+import { createQuickConfigRoutesHandler } from './quick-config-routes.js';
 
 // ==================== 类型定义 ====================
 
@@ -227,6 +228,8 @@ export class ApiServer {
   private opencodeProcessManager: OpencodeProcessManager | null = null;
   // 报表路由处理器（/api/v1/reports/*）— 始终启用，仅依赖 historyStore 与配置读取
   private reportsHandler: ReturnType<typeof createReportsRoutesHandler> | null = null;
+  // 一键配置路由处理器（/api/v1/opencode/health, /api/v1/opencode/quick-configure, /api/v1/services/start-all）
+  private quickConfigHandler: ReturnType<typeof createQuickConfigRoutesHandler> | null = null;
 
   constructor(options: ApiServerOptions = {}) {
     this.port = options.port ?? DEFAULT_API_PORT;
@@ -257,6 +260,18 @@ export class ApiServer {
     // 报表路由处理器（始终启用，复用 codehubConfigPath 以构建 repoId->name 映射）
     this.reportsHandler = createReportsRoutesHandler({
       configPath: options.codehubConfigPath,
+    });
+
+    // 一键配置路由处理器（始终启用）
+    const opencodeManager = this.opencodeProcessManager ?? new OpencodeProcessManager();
+    if (!this.opencodeProcessManager) {
+      this.opencodeProcessManager = opencodeManager;
+    }
+    this.quickConfigHandler = createQuickConfigRoutesHandler({
+      opencodeProcessManager: opencodeManager,
+      codehubConfigPath: options.codehubConfigPath,
+      opencodeConfigPath: options.opencodeConfigPath,
+      logger: this.logger,
     });
   }
 
@@ -364,9 +379,17 @@ export class ApiServer {
       return this.handleMetrics(req, res);
     }
 
+    // 一键配置路由：/api/v1/opencode/health, /api/v1/opencode/quick-configure, /api/v1/services/start-all
+    if (this.quickConfigHandler) {
+      const handled = await this.quickConfigHandler(req, res);
+      if (handled) return;
+    }
+
     if (
       this.codeHubHandler &&
-      (path.startsWith('/api/v1/codehub') || path.startsWith('/api/v1/opencode'))
+      (path.startsWith('/api/v1/codehub') ||
+        path.startsWith('/api/v1/opencode') ||
+        path.startsWith('/api/v1/services'))
     ) {
       const handled = await this.codeHubHandler(req, res);
       if (handled) return;

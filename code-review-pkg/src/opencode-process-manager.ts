@@ -1,5 +1,7 @@
 // src/opencode-process-manager.ts — opencode serve 子进程管理（启停 + 状态 + 日志缓冲）
 import { spawn, type ChildProcess } from 'node:child_process';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
+import { resolve, join, basename } from 'node:path';
 
 /** opencode serve 进程状态快照 */
 export interface OpencodeServeStatus {
@@ -32,6 +34,95 @@ const DEFAULT_PORT = 4096;
 /** stop 超时（SIGTERM 后等待 exit，超时则 SIGKILL） */
 const STOP_TIMEOUT_MS = 5000;
 
+export function validateCommandSafety(cmd: string): void {
+  const rules: [string, string][] = [
+    ['&&', '&&'],
+    [';', ';'],
+    ['|', '|'],
+    ['$(', '$('],
+    ['`', 'backtick (`)'],
+    ['>', '>'],
+    ['<', '<'],
+    ['||', '||'],
+    ['{}', '{}'],
+  ];
+  for (const [pattern, label] of rules) {
+    if (cmd.includes(pattern)) {
+      throw new Error(`Unsafe command: ${label}`);
+    }
+  }
+  if (cmd.includes('&')) {
+    throw new Error('Unsafe command: &');
+  }
+}
+
+export function replaceCommandVars(template: string | null | undefined, hostname: string, port: number): string {
+  if (template == null) return '';
+  return template.replace(/{hostname}/g, hostname).replace(/{port}/g, String(port));
+}
+
+export function parseCommandToArgv(command: string): string[] {
+  const argv: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (ch === '"') {
+      inQuotes = !inQuotes;
+      continue;
+    }
+    if (!inQuotes && /\s/.test(ch)) {
+      if (current.length > 0) {
+        argv.push(current);
+        current = '';
+      }
+      continue;
+    }
+    current += ch;
+  }
+  if (current.length > 0) {
+    argv.push(current);
+  }
+  return argv;
+}
+
+export function copyConfigFilesToWorkDir(workDir: string, opencodeConfigPath?: string, codehubConfigPath?: string): number {
+  const resolvedWorkDir = resolve(process.cwd(), workDir);
+  if (!existsSync(resolvedWorkDir)) {
+    mkdirSync(resolvedWorkDir, { recursive: true });
+  }
+
+  let copiedCount = 0;
+
+  const opencodeConfigSrc = resolve(process.cwd(), opencodeConfigPath ?? 'opencode-config/opencode.jsonc');
+  const codehubConfigSrc = resolve(process.cwd(), codehubConfigPath ?? '.codehub-config.json');
+  const opencodeConfigDirSrc = resolve(process.cwd(), 'opencode-config');
+
+  if (existsSync(opencodeConfigSrc)) {
+    copyFileSync(opencodeConfigSrc, join(resolvedWorkDir, basename(opencodeConfigSrc)));
+    copiedCount++;
+  }
+
+  if (existsSync(codehubConfigSrc)) {
+    copyFileSync(codehubConfigSrc, join(resolvedWorkDir, basename(codehubConfigSrc)));
+    copiedCount++;
+  }
+
+  if (existsSync(opencodeConfigDirSrc) && statSync(opencodeConfigDirSrc).isDirectory()) {
+    const entries = readdirSync(opencodeConfigDirSrc);
+    for (const entry of entries) {
+      const entryPath = join(opencodeConfigDirSrc, entry);
+      const stat = statSync(entryPath);
+      if (!stat.isDirectory()) {
+        copyFileSync(entryPath, join(resolvedWorkDir, entry));
+        copiedCount++;
+      }
+    }
+  }
+
+  return copiedCount;
+}
+
 export class OpencodeProcessManager {
   private child: ChildProcess | null = null;
   private logBuffer: string[] = [];
@@ -45,25 +136,41 @@ export class OpencodeProcessManager {
    * - spawn 成功后立即 resolve（不等进程退出）
    * - opencode 不在 PATH（ENOENT）时返回 { ok: false, error }
    */
-  async start(opts: { hostname?: string; port?: number } = {}): Promise<OpencodeStartResult> {
+  async start(opts: { hostname?: string; port?: number; commandTemplate?: string; workDir?: string; opencodeConfigPath?: string; codehubConfigPath?: string } = {}): Promise<OpencodeStartResult> {
     if (this.child && !this.child.killed && this.child.exitCode === null && this.child.signalCode === null) {
       return { ok: false, error: 'opencode serve already running' };
     }
 
+    const commandTemplate = opts.commandTemplate ?? 'opencode serve --hostname {hostname} --port {port}';
     const hostname = opts.hostname ?? DEFAULT_HOSTNAME;
     const port = opts.port ?? DEFAULT_PORT;
 
-    // Windows 上 opencode 通常是 .ps1 / .cmd 脚本而非 .exe，
-    // 必须启用 shell 让 shell 负责查找与执行脚本（否则 spawn 触发 ENOENT）
+    const commandResolved = replaceCommandVars(commandTemplate, hostname, port);
+
+    try {
+      validateCommandSafety(commandResolved);
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
+
+    try {
+      copyConfigFilesToWorkDir(opts.workDir ?? './', opts.opencodeConfigPath, opts.codehubConfigPath);
+    } catch (err) {
+      return { ok: false, error: 'Copy config failed: ' + (err as Error).message };
+    }
+
+    const resolvedWorkDir = resolve(process.cwd(), opts.workDir ?? './');
+
+    const argv = parseCommandToArgv(commandResolved);
     const isWindows = process.platform === 'win32';
-    const child = spawn(
-      'opencode',
-      ['serve', '--hostname', hostname, '--port', String(port)],
-      {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        shell: isWindows,
-      },
-    );
+
+    const stdio: ['ignore', 'pipe', 'pipe'] = ['ignore', 'pipe', 'pipe'];
+    let child: ChildProcess;
+    if (isWindows || argv.length === 0) {
+      child = spawn(commandResolved, [], { stdio, shell: true, cwd: resolvedWorkDir });
+    } else {
+      child = spawn(argv[0], argv.slice(1), { stdio, shell: false, cwd: resolvedWorkDir });
+    }
 
     // ENOENT 等同步/异步 error 事件
     // 用对象包装以避免 TS 在 await 后将 let 变量窄化为 null
