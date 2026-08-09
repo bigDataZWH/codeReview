@@ -30,6 +30,8 @@ import { createCodeHubRoutesHandler } from './codehub-routes.js';
 import { createReportsRoutesHandler } from './reports-routes.js';
 import { OpencodeProcessManager } from './opencode-process-manager.js';
 import { createQuickConfigRoutesHandler } from './quick-config-routes.js';
+import { ReviewSessionStore, type ReviewSessionStatus } from './review-session.js';
+import { ReviewWorkerPool, type ReviewTask } from './review-worker-pool.js';
 
 // ==================== 类型定义 ====================
 
@@ -63,6 +65,12 @@ export interface ApiServerOptions {
   staticDir?: string;
   /** 是否启用静态文件服务（默认 true） */
   enableStatic?: boolean;
+  /** 审查会话持久化文件路径 */
+  reviewStorePath?: string;
+  /** Worker 池并发数 */
+  workerConcurrency?: number;
+  /** 自定义审查 runner */
+  reviewRunner?: (task: ReviewTask, onProgress?: (pct: number) => void) => Promise<import('./review-session.js').ReviewFinding[]>;
 }
 
 /** /api/v1/review 请求体 */
@@ -230,6 +238,9 @@ export class ApiServer {
   private reportsHandler: ReturnType<typeof createReportsRoutesHandler> | null = null;
   // 一键配置路由处理器（/api/v1/opencode/health, /api/v1/opencode/quick-configure, /api/v1/services/start-all）
   private quickConfigHandler: ReturnType<typeof createQuickConfigRoutesHandler> | null = null;
+  // 审查会话存储 + Worker 池
+  private reviewStore: ReviewSessionStore;
+  private workerPool: ReviewWorkerPool;
 
   constructor(options: ApiServerOptions = {}) {
     this.port = options.port ?? DEFAULT_API_PORT;
@@ -273,6 +284,12 @@ export class ApiServer {
       opencodeConfigPath: options.opencodeConfigPath,
       logger: this.logger,
     });
+
+    this.reviewStore = new ReviewSessionStore(options.reviewStorePath);
+    this.workerPool = new ReviewWorkerPool(this.reviewStore, {
+      concurrency: options.workerConcurrency ?? 4,
+    }, options.reviewRunner);
+    this.workerPool.start();
   }
 
   /** 启动 HTTP 服务器 */
@@ -307,6 +324,7 @@ export class ApiServer {
     if (!this.server) return;
     const server = this.server;
     this.server = null;
+    this.workerPool.stop();
     if (this.opencodeProcessManager) {
       await this.opencodeProcessManager.stop().catch(() => undefined);
     }
@@ -378,6 +396,10 @@ export class ApiServer {
     if (path === '/api/v1/metrics' && method === 'GET') {
       return this.handleMetrics(req, res);
     }
+
+    // 审查会话路由：/api/v1/review/start, /api/v1/review/:sessionId, /api/v1/review/:sessionId/stream, /api/v1/review, /api/v1/review/:sessionId (DELETE)
+    const reviewSessionHandled = await this.handleReviewSessionRoutes(req, res, path, method);
+    if (reviewSessionHandled) return;
 
     // 一键配置路由：/api/v1/opencode/health, /api/v1/opencode/quick-configure, /api/v1/services/start-all
     if (this.quickConfigHandler) {
@@ -645,6 +667,159 @@ export class ApiServer {
       const response: MetricsResponse = { ok: false, error: message };
       sendJson(res, 500, response);
     }
+  }
+
+  private async handleReviewSessionRoutes(
+    req: IncomingMessage,
+    res: ServerResponse,
+    path: string,
+    method: string,
+  ): Promise<boolean> {
+    const reviewPrefix = '/api/v1/review';
+
+    if (path === reviewPrefix && method === 'GET') {
+      const query = parseQuery(req.url ?? '');
+      const filter: { status?: ReviewSessionStatus } = {};
+      if (query.status) filter.status = query.status as ReviewSessionStatus;
+      const sessions = this.reviewStore.listSessions(Object.keys(filter).length > 0 ? filter : undefined);
+      sendJson(res, 200, { ok: true, sessions, count: sessions.length });
+      return true;
+    }
+
+    if (path === `${reviewPrefix}/start` && method === 'POST') {
+      let bodyText: string;
+      try {
+        bodyText = await readRequestBody(req);
+      } catch {
+        sendJson(res, 400, { ok: false, error: 'Failed to read request body' });
+        return true;
+      }
+      const payload = parseJsonBody(bodyText) as { mrIid?: number; repoId?: string; priority?: 'low' | 'normal' | 'high' };
+      if (!payload.mrIid || typeof payload.mrIid !== 'number') {
+        sendJson(res, 400, { ok: false, error: 'Missing or invalid "mrIid" field' });
+        return true;
+      }
+      const task: ReviewTask = {
+        sessionId: '',
+        mrIid: payload.mrIid,
+        repoId: payload.repoId,
+        priority: payload.priority,
+      };
+      const sessionId = await this.workerPool.submit(task);
+      sendJson(res, 200, { ok: true, sessionId });
+      return true;
+    }
+
+    // /api/v1/review/:sessionId 或 /api/v1/review/:sessionId/stream
+    const remaining = path.slice(reviewPrefix.length + 1);
+    if (!remaining) return false;
+
+    const segments = remaining.split('/');
+    const sessionId = segments[0];
+
+    if (!sessionId || sessionId === 'start') return false;
+
+    if (segments.length === 1) {
+      // /api/v1/review/:sessionId
+      if (method === 'GET') {
+        const session = this.reviewStore.getSession(sessionId);
+        if (!session) {
+          sendJson(res, 404, { ok: false, error: `Session not found: ${sessionId}` });
+        } else {
+          sendJson(res, 200, { ok: true, session });
+        }
+        return true;
+      }
+      if (method === 'DELETE') {
+        const session = this.reviewStore.getSession(sessionId);
+        if (!session) {
+          sendJson(res, 404, { ok: false, error: `Session not found: ${sessionId}` });
+        } else if (session.status === 'running' || session.status === 'queued') {
+          this.reviewStore.updateSession(sessionId, {
+            status: 'cancelled',
+            finishedAt: new Date().toISOString(),
+          });
+          sendJson(res, 200, { ok: true, cancelled: true });
+        } else {
+          this.reviewStore.deleteSession(sessionId);
+          sendJson(res, 200, { ok: true, deleted: true });
+        }
+        return true;
+      }
+    }
+
+    if (segments.length === 2 && segments[1] === 'stream' && method === 'GET') {
+      const session = this.reviewStore.getSession(sessionId);
+      if (!session) {
+        sendJson(res, 404, { ok: false, error: `Session not found: ${sessionId}` });
+        return true;
+      }
+      this.handleSSEStream(req, res, sessionId);
+      return true;
+    }
+
+    return false;
+  }
+
+  private handleSSEStream(req: IncomingMessage, res: ServerResponse, sessionId: string): void {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    });
+
+    let lastUpdatedAt = '';
+    const sendEvent = (type: string, data: unknown) => {
+      res.write(`data: ${JSON.stringify({ type, data })}\n\n`);
+    };
+
+    const sendCurrent = () => {
+      const session = this.reviewStore.getSession(sessionId);
+      if (!session) {
+        sendEvent('error', { message: 'Session not found' });
+        res.end();
+        return;
+      }
+      sendEvent('progress', { sessionId, progress: session.progress, status: session.status });
+      if (session.findings.length > 0) {
+        sendEvent('finding', { sessionId, findings: session.findings });
+      }
+      if (session.status === 'completed') {
+        sendEvent('complete', { sessionId, findings: session.findings });
+        res.end();
+        return;
+      }
+      if (session.status === 'failed') {
+        sendEvent('error', { sessionId, error: session.error });
+        res.end();
+        return;
+      }
+      if (session.status === 'cancelled') {
+        sendEvent('error', { sessionId, error: 'Session cancelled' });
+        res.end();
+        return;
+      }
+    };
+
+    sendCurrent();
+
+    const timer = setInterval(() => {
+      const session = this.reviewStore.getSession(sessionId);
+      if (!session) {
+        sendEvent('error', { message: 'Session not found' });
+        clearInterval(timer);
+        res.end();
+        return;
+      }
+      if (session.updatedAt !== lastUpdatedAt) {
+        lastUpdatedAt = session.updatedAt;
+        sendCurrent();
+      }
+    }, 1000);
+
+    req.on('close', () => {
+      clearInterval(timer);
+    });
   }
 }
 

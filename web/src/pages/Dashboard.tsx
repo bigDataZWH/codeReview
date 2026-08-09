@@ -13,6 +13,7 @@ import {
   List,
   Empty,
   Divider,
+  message,
 } from 'antd';
 import {
   MergeOutlined,
@@ -66,7 +67,7 @@ function Dashboard() {
   const todayStr = dayjs().format('YYYY年MM月DD日 dddd');
   const activeRepo = reposConfig.find((r) => r.repoId === activeRepoId);
 
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['dashboard'],
     queryFn: () =>
       codehubApi.getDashboard() as Promise<{ ok: boolean; dashboard: DashboardStats }>,
@@ -129,21 +130,45 @@ function Dashboard() {
 
   if (error || !data?.ok) {
     return (
-      <Alert
-        type="warning"
-        message="无法加载概览数据"
-        description={
-          <div>
-            <p>请先在设置页面配置 CodeHub 连接信息。</p>
-            <p>错误信息：{error instanceof Error ? error.message : '未知错误'}</p>
-          </div>
-        }
-        showIcon
-      />
+      <div style={{ maxWidth: 600, margin: '60px auto', padding: '0 24px' }}>
+        <Alert
+          type="warning"
+          message="无法加载概览数据"
+          description={
+            <div>
+              <p>请先在设置页面配置 CodeHub 连接信息。</p>
+              <p>错误信息：{error instanceof Error ? error.message : '未知错误'}</p>
+            </div>
+          }
+          showIcon
+          action={
+            <Button
+              size="small"
+              type="primary"
+              icon={<ReloadOutlined />}
+              onClick={() => refetch()}
+            >
+              重试
+            </Button>
+          }
+        />
+      </div>
     );
   }
 
-  const dashboard = data.dashboard;
+  const dashboard: DashboardStats = data?.dashboard ?? {
+    openMRs: 0,
+    mergedMRs: 0,
+    totalMRs: 0,
+    findingsBySeverity: {
+      critical: 0,
+      high: 0,
+      medium: 0,
+      low: 0,
+      info: 0,
+    },
+    trend: [],
+  };
   const overview = reportsData?.overview;
 
   const totalFindings =
@@ -167,9 +192,10 @@ function Dashboard() {
     : 0;
 
   const trendDir = useMemo(() => {
-    if (dashboard.trend.length < 2) return 'up' as const;
+    if (!dashboard.trend || dashboard.trend.length < 2) return 'up' as const;
     const last = dashboard.trend[dashboard.trend.length - 1];
     const prev = dashboard.trend[dashboard.trend.length - 2];
+    if (!last || !prev) return 'up' as const;
     return (last.reviews >= prev.reviews ? 'up' : 'down') as 'up' | 'down';
   }, [dashboard.trend]);
 
@@ -352,13 +378,13 @@ function Dashboard() {
   ];
 
   const healthOk = healthData?.ok ?? false;
-  const opencodeOk = healthData?.opencode.installed ?? false;
-  const opencodeVersion = healthData?.opencode.version ?? '-';
-  const nodeOk = healthData?.nodejs.supported ?? false;
-  const nodeVersion = healthData?.nodejs.version ?? '-';
-  const opencodePortAvail = healthData?.ports.opencode?.available ?? false;
-  const apiPortAvail = healthData?.ports.api?.available ?? false;
-  const webPortAvail = healthData?.ports.web?.available ?? false;
+  const opencodeOk = healthData?.opencode?.installed ?? false;
+  const opencodeVersion = healthData?.opencode?.version ?? '-';
+  const nodeOk = healthData?.nodejs?.supported ?? false;
+  const nodeVersion = healthData?.nodejs?.version ?? '-';
+  const opencodePortAvail = healthData?.ports?.opencode?.available ?? false;
+  const apiPortAvail = healthData?.ports?.api?.available ?? false;
+  const webPortAvail = healthData?.ports?.web?.available ?? false;
 
   const opencodeServeRunning = opencodeStatus?.running ?? false;
 
@@ -558,7 +584,13 @@ function Dashboard() {
                 renderItem={(mr: CodeHubMR) => (
                   <List.Item
                     style={{ padding: '10px 0', cursor: 'pointer' }}
-                    onClick={() => navigate(`/mrs/${mr.iid}`)}
+                    onClick={() => {
+                      if (mr.iid != null && !isNaN(mr.iid)) {
+                        navigate(`/mrs/${mr.iid}`);
+                      } else {
+                        message.error('无效的 MR ID，无法查看详情');
+                      }
+                    }}
                   >
                     <List.Item.Meta
                       avatar={
@@ -712,7 +744,7 @@ function Dashboard() {
                       color: 'var(--cr-ink-3)',
                     }}
                   >
-                    {opencodeStatus.hostname}:{opencodeStatus.port}
+                    {opencodeStatus?.hostname ?? '-'}:{opencodeStatus?.port ?? '-'}
                   </div>
                 )}
               </div>
@@ -955,20 +987,20 @@ function Dashboard() {
                   >
                     <span>
                       CodeHub:{' '}
-                      <strong style={{ color: healthData.config.codehubConfigured ? '#10b981' : '#ef4444' }}>
-                        {healthData.config.codehubConfigured ? '已配置' : '未配置'}
+                      <strong style={{ color: healthData?.config?.codehubConfigured ? '#10b981' : '#ef4444' }}>
+                        {healthData?.config?.codehubConfigured ? '已配置' : '未配置'}
                       </strong>
                     </span>
                     <span>
                       opencode:{' '}
-                      <strong style={{ color: healthData.config.opencodeConfigured ? '#10b981' : '#ef4444' }}>
-                        {healthData.config.opencodeConfigured ? '已配置' : '未配置'}
+                      <strong style={{ color: healthData?.config?.opencodeConfigured ? '#10b981' : '#ef4444' }}>
+                        {healthData?.config?.opencodeConfigured ? '已配置' : '未配置'}
                       </strong>
                     </span>
                     <span>
                       检视:{' '}
-                      <strong style={{ color: healthData.config.reviewConfigured ? '#10b981' : '#ef4444' }}>
-                        {healthData.config.reviewConfigured ? '已配置' : '未配置'}
+                      <strong style={{ color: healthData?.config?.reviewConfigured ? '#10b981' : '#ef4444' }}>
+                        {healthData?.config?.reviewConfigured ? '已配置' : '未配置'}
                       </strong>
                     </span>
                   </div>

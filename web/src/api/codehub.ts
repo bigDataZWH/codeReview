@@ -223,6 +223,10 @@ export interface EnvironmentHealth {
     opencodeConfigured: boolean;
     reviewConfigured: boolean;
   };
+  initialized?: boolean;
+  agents?: Array<{ name: string; status: 'ready' | 'pending' | 'failed' }>;
+  lastWarmupMs?: number;
+  derivedStartCommand?: string;
 }
 
 export interface QuickConfigureInput {
@@ -238,8 +242,8 @@ export interface QuickConfigureInput {
     defaultLanguage?: string;
   };
   opencodeManager?: {
-    startCommand: string;
-    workDir: string;
+    startCommand?: string;
+    workDir?: string;
   };
 }
 
@@ -250,6 +254,43 @@ export interface StartAllResult {
     api: { started: boolean; pid?: number; error?: string };
     web: { started: boolean; pid?: number; error?: string };
   };
+}
+
+// ===== 审查会话 =====
+export interface ReviewFinding {
+  id: string;
+  file: string;
+  line: number;
+  endLine?: number;
+  severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
+  category: string;
+  message: string;
+  suggestion?: string;
+  confidence: number;
+  source: 'rule' | 'ai';
+  ruleId?: string;
+}
+
+export type ReviewSessionStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+
+export interface ReviewSession {
+  id: string;
+  mrIid: number;
+  repoId?: string;
+  status: ReviewSessionStatus;
+  progress: number;
+  findings: ReviewFinding[];
+  startedAt: string;
+  updatedAt: string;
+  finishedAt?: string;
+  error?: string;
+  workerId?: string;
+}
+
+export interface ListReviewSessionsResponse {
+  ok: boolean;
+  sessions: ReviewSession[];
+  count: number;
 }
 
 export const codehubApi = {
@@ -473,4 +514,30 @@ export const codehubApi = {
 
   getServiceStatus: () =>
     api.get('/services/status').then((r) => r.data),
+
+  // ===== 审查会话 =====
+  startReview: async (mrIid: number, repoId?: string, priority: 'low' | 'normal' | 'high' = 'normal'): Promise<{ ok: boolean; sessionId?: string; error?: string }> => {
+    try {
+      const r = await api.post('/review/start', { mrIid, repoId, priority });
+      return r.data as { ok: boolean; sessionId?: string; error?: string };
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : '未知错误';
+      return { ok: false, error: msg };
+    }
+  },
+
+  getReviewSession: (id: string) =>
+    api
+      .get(`/review/${id}`)
+      .then((r) => r.data as { ok: boolean; session: ReviewSession }),
+
+  listReviewSessions: (status?: ReviewSessionStatus) =>
+    api
+      .get<ListReviewSessionsResponse>('/review', { params: { status } })
+      .then((r) => r.data),
+
+  deleteReviewSession: (id: string) =>
+    api.delete(`/review/${id}`).then((r) => r.data),
+
+  getReviewStreamUrl: (id: string) => `/review/${id}/stream`,
 };

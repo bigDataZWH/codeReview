@@ -12,9 +12,9 @@ import { resolve } from 'node:path';
 import { checkEnvironment, type EnvironmentCheckResult } from './environment-checker.js';
 import { saveCodeHubConfig } from './codehub-config.js';
 import type { MultiRepoConfig } from './types.js';
-import { saveOpencodeManagerConfig } from './opencode-manager-config.js';
+import { saveOpencodeManagerConfig, loadOpencodeManagerConfig } from './opencode-manager-config.js';
 import type { OpencodeManagerConfig } from './opencode-manager-config.js';
-import { OpencodeProcessManager } from './opencode-process-manager.js';
+import { OpencodeProcessManager, deriveDefaultStartCommand, replaceCommandVars, warmupAgents } from './opencode-process-manager.js';
 
 /** 快速配置请求体 */
 export interface QuickConfigureRequest {
@@ -30,8 +30,8 @@ export interface QuickConfigureRequest {
     defaultLanguage?: string;
   };
   opencodeManager?: {
-    startCommand: string;
-    workDir: string;
+    startCommand?: string;
+    workDir?: string;
   };
 }
 
@@ -221,7 +221,29 @@ export function createQuickConfigRoutesHandler(options: QuickConfigRoutesOptions
           codehubConfigPath,
           opencodeConfigPath,
         });
-        sendJson(res, 200, result);
+
+        const status = opencodeProcessManager.getStatus();
+        const mgrConfig = loadOpencodeManagerConfig();
+        const warmup = warmupAgents(mgrConfig.workDir ?? './', opencodeConfigPath);
+        const initialized =
+          result.opencode.installed &&
+          result.config.opencodeConfigured &&
+          status.running &&
+          warmup.ok;
+
+        const hostname = status.hostname ?? '127.0.0.1';
+        const port = status.port ?? 4096;
+        const derivedStartCommand =
+          replaceCommandVars(mgrConfig.startCommand, hostname, port) ||
+          deriveDefaultStartCommand(hostname, port);
+
+        sendJson(res, 200, {
+          ...result,
+          initialized,
+          agents: warmup.agents,
+          lastWarmupMs: warmup.lastWarmupMs,
+          derivedStartCommand,
+        });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         sendJson(res, 500, { ok: false, error: message });
@@ -262,17 +284,27 @@ export function createQuickConfigRoutesHandler(options: QuickConfigRoutesOptions
         const saved = saveCodeHubConfig(multiConfig, codehubConfigPath);
 
         let opencodeManagerSaved: OpencodeManagerConfig | null = null;
+        let finalStartCommand: string;
+        let finalWorkDir: string;
+
         if (body.opencodeManager) {
+          finalStartCommand = body.opencodeManager.startCommand ?? deriveDefaultStartCommand();
+          finalWorkDir = body.opencodeManager.workDir ?? './';
           opencodeManagerSaved = saveOpencodeManagerConfig({
-            startCommand: body.opencodeManager.startCommand,
-            workDir: body.opencodeManager.workDir,
+            startCommand: finalStartCommand,
+            workDir: finalWorkDir,
           });
+        } else {
+          finalStartCommand = deriveDefaultStartCommand();
+          finalWorkDir = './';
         }
 
         sendJson(res, 200, {
           ok: true,
           config: saved,
           opencodeManager: opencodeManagerSaved,
+          startCommand: finalStartCommand,
+          workDir: finalWorkDir,
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -290,6 +322,17 @@ export function createQuickConfigRoutesHandler(options: QuickConfigRoutesOptions
       let webResult: ServiceStartResult = { started: false, error: 'opencode not ready' };
 
       if (opencodeResult.started) {
+        try {
+          const mgrConfig = loadOpencodeManagerConfig();
+          const pmStatus = opencodeProcessManager.getStatus();
+          const hostname = pmStatus.hostname ?? '127.0.0.1';
+          const port = pmStatus.port ?? 4096;
+          const derivedCmd = replaceCommandVars(mgrConfig.startCommand, hostname, port) || deriveDefaultStartCommand(hostname, port);
+          logger?.(`[quick-config] derived startCommand: ${derivedCmd}`);
+        } catch {
+          const derivedCmd = deriveDefaultStartCommand();
+          logger?.(`[quick-config] derived default startCommand: ${derivedCmd}`);
+        }
         apiResult = startApiService(logger);
         webResult = startWebService(logger);
       }

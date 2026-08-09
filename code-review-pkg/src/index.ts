@@ -693,3 +693,22 @@ export type {
   ServiceStartResult,
   QuickConfigRoutesOptions,
 } from './quick-config-routes.js';
+
+// review-session (持久化审查会话存储)
+export { ReviewSessionStore } from './review-session.js';
+export type {
+  ReviewFinding,
+  ReviewSession,
+  CreateSessionInput,
+} from './review-session.js';
+
+// review-worker-pool (并发审查 Worker 池)
+export { ReviewWorkerPool } from './review-worker-pool.js';
+export type {
+  WorkerConfig,
+  ReviewTask,
+} from './review-worker-pool.js';
+
+// review-self-inspector (审查自检器)
+export { ReviewSelfInspector } from './review-self-inspector.js';
+export type { InspectionResult } from './review-self-inspector.js';
