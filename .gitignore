@@ -3,3 +3,8 @@ dist/
 .code-review-graph/
 *.log
 .DS_Store
+
+# TypeScript / Vite 构建产物
+*.tsbuildinfo
+web/vite.config.d.ts
+web/vite.config.js

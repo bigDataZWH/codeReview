@@ -298,7 +298,7 @@ export interface MCPClientConfig {
 
 // ==================== CodeHub 相关类型 ====================
 
-/** CodeHub 连接配置 */
+/** CodeHub 连接配置（旧版单仓结构，向后兼容保留） */
 export interface CodeHubConfig {
   /** CodeHub 平台地址 */
   baseUrl: string;
@@ -306,6 +306,44 @@ export interface CodeHubConfig {
   token: string;
   /** 项目 ID / 路径 */
   projectId: string;
+}
+
+/**
+ * 单个 CodeHub 仓库配置（多仓结构中的一个条目）。
+ * 用于将一份 baseUrl/token/projectId/repoDir 组合封装为可独立切换的仓库。
+ */
+export interface RepoConfig {
+  /** 仓库唯一标识（迁移时默认生成 repo-<timestamp>-<rand6>） */
+  repoId: string;
+  /** 仓库显示名称 */
+  name: string;
+  /** CodeHub 平台地址 */
+  baseUrl: string;
+  /** Personal Access Token */
+  token: string;
+  /** 项目 ID / 路径（兼容数字与字符串两种形式） */
+  projectId: number | string;
+  /** 本地仓库目录（可选，未指定时由调用方决定默认目录） */
+  repoDir?: string;
+}
+
+/**
+ * 多仓配置结构（升级自旧版单仓 CodeHubFullConfig）。
+ * 配置文件持久化的顶层结构。
+ */
+export interface MultiRepoConfig {
+  /** 仓库配置列表 */
+  repos: RepoConfig[];
+  /** 当前激活的仓库 repoId；无激活仓库时为 null */
+  activeRepoId: string | null;
+  /** 同步间隔（毫秒），默认 600000 */
+  syncIntervalMs: number;
+  /** 审查相关配置（可选，保留旧版 reviewConfig 字段以保证向后兼容） */
+  reviewConfig?: {
+    defaultStrength?: 'lenient' | 'standard' | 'strict';
+    securityReview?: boolean;
+    defaultLanguage?: string;
+  };
 }
 
 /** CodeHub 用户信息 */

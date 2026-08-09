@@ -1,6 +1,7 @@
 import { Layout, Menu } from 'antd';
 import {
   DashboardOutlined,
+  BarChartOutlined,
   MergeOutlined,
   FolderOutlined,
   SettingOutlined,
@@ -18,6 +19,11 @@ const menuItems = [
     key: '/dashboard',
     icon: <DashboardOutlined />,
     label: '概览',
+  },
+  {
+    key: '/reports',
+    icon: <BarChartOutlined />,
+    label: '报表',
   },
   {
     key: '/mrs',

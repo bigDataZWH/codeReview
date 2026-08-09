@@ -103,46 +103,160 @@ export interface DashboardStats {
   trend: Array<{ date: string; reviews: number; findings: number }>;
 }
 
+// ===== 多仓配置相关类型 =====
+export interface RepoConfig {
+  repoId: string;
+  name: string;
+  baseUrl: string;
+  token: string;
+  projectId: number | string;
+  repoDir?: string;
+}
+export interface MultiRepoConfig {
+  repos: RepoConfig[];
+  activeRepoId: string | null;
+  syncIntervalMs: number;
+}
+
+// ===== 同步状态与结果 =====
+export interface SyncStatus {
+  running: boolean;
+  lastSyncAt: string | null;
+  lastSyncCount: number;
+  nextSyncAt: string | null;
+  syncIntervalMs: number;
+  paused: boolean;
+  errors: string[];
+}
+export interface SyncResult {
+  ok: boolean;
+  syncedAt: string;
+  repoCount: number;
+  mrCount: number;
+  errors: string[];
+}
+
+// ===== 批量提交评论与合入 =====
+export interface BatchCommentResult {
+  ok: boolean;
+  total: number;
+  success: number;
+  failed: number;
+  results: Array<{ findingId: string; ok: boolean; commentId?: number; error?: string }>;
+}
+export interface MergeCheckResult {
+  ok: boolean;
+  canMerge: boolean;
+  blockingFindings: any[];
+  warnings: string[];
+}
+export interface MergeResult {
+  ok: boolean;
+  merged: boolean;
+  mrState: string;
+}
+
+// ===== 报表相关类型 =====
+export interface ReportsOverview {
+  acceptanceRate: number;
+  acceptanceNumerator: number;
+  acceptanceDenominator: number;
+  interceptionCount: number;
+  reviewCount: number;
+  totalFindings: number;
+  avgFindingsPerMR: number;
+}
+export interface TrendPoint {
+  date: string;
+  reviews: number;
+  findings: number;
+  acceptedFindings: number;
+  interceptions: number;
+}
+export interface ByRuleItem {
+  ruleId: string;
+  ruleName: string;
+  hitCount: number;
+  acceptanceCount: number;
+  acceptanceRate: number;
+}
+export interface ByAuthorItem {
+  author: string;
+  mrCount: number;
+  totalFindings: number;
+  avgFindingsPerMR: number;
+  acceptanceRate: number;
+}
+export interface ByRepoItem {
+  repoId: string;
+  repoName: string;
+  mrCount: number;
+  findings: number;
+  acceptanceRate: number;
+  interceptions: number;
+}
+
 export const codehubApi = {
   getConfig: () => api.get('/codehub/config').then((r) => r.data),
   saveConfig: (config: Partial<CodeHubConfig>) =>
     api.post('/codehub/config', config).then((r) => r.data),
-  testConnection: () => api.post('/codehub/config/test').then((r) => r.data),
+  testConnection: (repoId?: string) =>
+    api.post('/codehub/config/test', undefined, { params: { repoId } }).then((r) => r.data),
 
-  getMRList: (params?: {
-    state?: 'open' | 'closed' | 'merged' | 'all';
-    page?: number;
-    per_page?: number;
-    search?: string;
-    order_by?: 'created_at' | 'updated_at' | 'title';
-    sort?: 'asc' | 'desc';
-  }) =>
+  // 现有 MR 相关方法新增可选 repoId 查询参数（多仓场景下指定目标仓库）
+  getMRList: (
+    params?: {
+      state?: 'open' | 'closed' | 'merged' | 'all';
+      page?: number;
+      per_page?: number;
+      search?: string;
+      order_by?: 'created_at' | 'updated_at' | 'title';
+      sort?: 'asc' | 'desc';
+    },
+    repoId?: string,
+  ) =>
     api
-      .get<MRListResponse>('/codehub/mrs', { params })
+      .get<MRListResponse>('/codehub/mrs', { params: { ...params, repoId } })
       .then((r) => r.data),
 
-  getMR: (mrIid: number) =>
-    api.get(`/codehub/mrs/${mrIid}`).then((r) => r.data),
+  getMR: (mrIid: number, repoId?: string) =>
+    api
+      .get(`/codehub/mrs/${mrIid}`, { params: { repoId } })
+      .then((r) => r.data),
 
-  getMRDiff: (mrIid: number) =>
-    api.get<MRDiffResponse>(`/codehub/mrs/${mrIid}/diff`).then((r) => r.data),
+  getMRDiff: (mrIid: number, repoId?: string) =>
+    api
+      .get<MRDiffResponse>(`/codehub/mrs/${mrIid}/diff`, { params: { repoId } })
+      .then((r) => r.data),
 
-  getMRComments: (mrIid: number) =>
-    api.get(`/codehub/mrs/${mrIid}/comments`).then((r) => r.data),
+  getMRComments: (mrIid: number, repoId?: string) =>
+    api
+      .get(`/codehub/mrs/${mrIid}/comments`, { params: { repoId } })
+      .then((r) => r.data),
 
   createMRComment: (
     mrIid: number,
     data: { body: string; path?: string; line?: number; line_type?: 'new' | 'old' },
-  ) => api.post(`/codehub/mrs/${mrIid}/comments`, data).then((r) => r.data),
+    repoId?: string,
+  ) =>
+    api
+      .post(`/codehub/mrs/${mrIid}/comments`, data, { params: { repoId } })
+      .then((r) => r.data),
 
-  getMRFindings: (mrIid: number) =>
-    api.get(`/codehub/mrs/${mrIid}/findings`).then((r) => r.data),
+  getMRFindings: (mrIid: number, repoId?: string) =>
+    api
+      .get(`/codehub/mrs/${mrIid}/findings`, { params: { repoId } })
+      .then((r) => r.data),
 
-  createMRIssue: (mrIid: number, options?: { labels?: string[] }) =>
-    api.post(`/codehub/mrs/${mrIid}/issue`, options).then((r) => r.data),
+  createMRIssue: (mrIid: number, options?: { labels?: string[] }, repoId?: string) =>
+    api
+      .post(`/codehub/mrs/${mrIid}/issue`, options, { params: { repoId } })
+      .then((r) => r.data),
 
-  saveMRReport: (mrIid: number, options?: { filePath?: string }) =>
-    api.post(`/codehub/mrs/${mrIid}/report`, options).then((r) => r.data),
+  saveMRReport: (mrIid: number, options?: { filePath?: string }, repoId?: string) =>
+    api
+      .post(`/codehub/mrs/${mrIid}/report`, options, { params: { repoId } })
+      .then((r) => r.data),
 
   getRepos: () => api.get('/codehub/repos').then((r) => r.data),
   getRepo: (projectId: string) =>
@@ -163,6 +277,8 @@ export const codehubApi = {
       .then((r) => r.data),
   getRepoBranches: (projectId: string) =>
     api.get(`/codehub/repos/${encodeURIComponent(projectId)}/branches`).then((r) => r.data),
+  // 注意：此 deleteRepo 操作的是 /codehub/repos/:projectId（本地克隆仓库管理），
+  // 与下方多仓配置的 deleteRepoConfig（/codehub/repos-config/:repoId）不同。
   deleteRepo: (projectId: string) =>
     api.delete(`/codehub/repos/${encodeURIComponent(projectId)}`).then((r) => r.data),
 
@@ -183,11 +299,100 @@ export const codehubApi = {
   getOpencodeServeStatus: () =>
     api.get('/opencode/serve/status').then((r) => r.data),
 
-  runMRReview: (mrIid: number) =>
-    api.post(`/codehub/mrs/${mrIid}/review`).then((r) => r.data),
-
-  createFindingComment: (mrIid: number, findingId: string) =>
+  runMRReview: (mrIid: number, repoId?: string) =>
     api
-      .post(`/codehub/mrs/${mrIid}/findings/${findingId}/comment`)
+      .post(`/codehub/mrs/${mrIid}/review`, undefined, { params: { repoId } })
       .then((r) => r.data),
+
+  createFindingComment: (mrIid: number, findingId: string, repoId?: string) =>
+    api
+      .post(`/codehub/mrs/${mrIid}/findings/${findingId}/comment`, undefined, {
+        params: { repoId },
+      })
+      .then((r) => r.data),
+
+  // ===== 多仓配置 =====
+  // 获取多仓配置列表及当前激活的仓库
+  listReposConfig: () => api.get('/codehub/repos-config').then((r) => r.data),
+
+  // 新增一个仓库配置
+  addRepo: (input: {
+    name: string;
+    baseUrl: string;
+    token: string;
+    projectId: number | string;
+    repoDir?: string;
+  }) => api.post('/codehub/repos-config', input).then((r) => r.data),
+
+  // 更新指定仓库配置（部分字段）
+  updateRepo: (repoId: string, patch: Partial<RepoConfig>) =>
+    api
+      .put(`/codehub/repos-config/${encodeURIComponent(repoId)}`, patch)
+      .then((r) => r.data),
+
+  // 删除指定仓库配置（操作 /codehub/repos-config/:repoId）
+  // 注意：命名为 deleteRepoConfig 以避免与已有 deleteRepo（本地克隆管理）冲突
+  deleteRepoConfig: (repoId: string) =>
+    api
+      .delete(`/codehub/repos-config/${encodeURIComponent(repoId)}`)
+      .then((r) => r.data),
+
+  // 激活指定仓库配置
+  activateRepo: (repoId: string) =>
+    api
+      .post(`/codehub/repos-config/${encodeURIComponent(repoId)}/activate`)
+      .then((r) => r.data),
+
+  // ===== 同步 =====
+  // 立即触发一次 MR 同步
+  triggerSync: () => api.post('/codehub/mrs/sync').then((r) => r.data),
+
+  // 查询同步任务状态
+  getSyncStatus: () => api.get('/codehub/mrs/sync/status').then((r) => r.data),
+
+  // 暂停定时同步
+  pauseSync: () => api.post('/codehub/mrs/sync/pause').then((r) => r.data),
+
+  // 恢复定时同步
+  resumeSync: () => api.post('/codehub/mrs/sync/resume').then((r) => r.data),
+
+  // ===== 批量提交评论 + 合入 =====
+  // 批量提交当前 MR 所有待评论 findings
+  batchSubmitComments: (mrIid: number, repoId?: string) =>
+    api
+      .post(`/codehub/mrs/${mrIid}/comments/batch`, undefined, { params: { repoId } })
+      .then((r) => r.data),
+
+  // 合入前检查：是否存在阻断性 findings
+  mergeCheck: (mrIid: number, repoId?: string) =>
+    api
+      .get(`/codehub/mrs/${mrIid}/merge/check`, { params: { repoId } })
+      .then((r) => r.data),
+
+  // 执行合入（存在阻断时后端返回 409）
+  mergeMR: (
+    mrIid: number,
+    options?: { mergeMethod?: 'merge' | 'squash' | 'rebase'; force?: boolean },
+    repoId?: string,
+  ) =>
+    api
+      .post(`/codehub/mrs/${mrIid}/merge`, options, { params: { repoId } })
+      .then((r) => r.data),
+
+  // ===== 报表（路径前缀 /reports）=====
+  // 总览数据
+  getReportsOverview: () => api.get('/reports/overview').then((r) => r.data),
+
+  // 趋势数据，range 省略时由后端默认
+  getReportsTrend: (range?: '7d' | '30d' | '90d') =>
+    api.get('/reports/trend', { params: { range } }).then((r) => r.data),
+
+  // 按规则聚合
+  getReportsByRule: () => api.get('/reports/by-rule').then((r) => r.data),
+
+  // 按作者聚合
+  getReportsByAuthor: () => api.get('/reports/by-author').then((r) => r.data),
+
+  // 按仓库聚合
+  getReportsByRepo: () => api.get('/reports/by-repo').then((r) => r.data),
 };

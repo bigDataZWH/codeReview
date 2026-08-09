@@ -6,6 +6,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import http from 'node:http';
 import { startMockCodeHubServer, type MockCodeHubServerHandle } from '../../src/mock-codehub-server.js';
 import { startApiServer, type ApiServer } from '../../src/api-server.js';
+import { _resetRepoManagerCacheForTests } from '../../src/codehub-routes.js';
 import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -42,6 +43,9 @@ async function getAvailablePort(): Promise<number> {
 }
 
 beforeAll(async () => {
+  // 避免进程内其他测试文件已初始化 repoManager 缓存（模块级 Map）导致本测试自定义 configPath 被忽略
+  _resetRepoManagerCacheForTests();
+
   // 1. 启动 mock-codehub
   mockHandle = await startMockCodeHubServer({
     port: MOCK_PORT,

@@ -14,7 +14,12 @@ import {
   Spin,
   Tag,
   Badge,
+  Table,
+  Modal,
+  Popconfirm,
+  Empty,
 } from 'antd';
+import type { TableProps } from 'antd';
 import {
   SettingOutlined,
   SaveOutlined,
@@ -23,9 +28,16 @@ import {
   RobotOutlined,
   PlayCircleOutlined,
   PoweroffOutlined,
+  PlusOutlined,
+  EditOutlined,
+  DeleteOutlined,
+  CheckOutlined,
+  ThunderboltOutlined,
+  FolderOutlined,
 } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { codehubApi, type CodeHubConfig } from '@/api/codehub';
+import { codehubApi, type CodeHubConfig, type RepoConfig } from '@/api/codehub';
+import { useAppStore } from '@/store/app';
 
 const { TextArea } = Input;
 
@@ -53,6 +65,337 @@ interface OpencodeServeStatus {
   hostname?: string;
   startedAt?: string;
   lastLogLines: string[];
+}
+
+// 代码仓库管理子组件：表格 + 新增/编辑 Modal + 激活/删除/测试连接
+function ReposManager() {
+  const queryClient = useQueryClient();
+  const [repoForm] = Form.useForm();
+  const {
+    activeRepoId,
+    reposConfig,
+    setActiveRepoId,
+    setReposConfig,
+    loadReposConfig,
+  } = useAppStore();
+
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editingRepo, setEditingRepo] = useState<RepoConfig | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  // 拉取多仓配置列表
+  const reposQuery = useQuery({
+    queryKey: ['repos-config'],
+    queryFn: () => codehubApi.listReposConfig(),
+    retry: false,
+  });
+
+  // 查询结果同步到 store
+  useEffect(() => {
+    if (reposQuery.data?.ok) {
+      setReposConfig(reposQuery.data.repos || []);
+      setActiveRepoId(reposQuery.data.activeRepoId ?? null);
+    }
+  }, [reposQuery.data, setReposConfig, setActiveRepoId]);
+
+  // 刷新列表：失效缓存触发重新拉取，并同步 store
+  const refreshList = async () => {
+    await queryClient.invalidateQueries({ queryKey: ['repos-config'] });
+    await loadReposConfig();
+  };
+
+  // 打开新增 Modal
+  const openAddModal = () => {
+    setEditingRepo(null);
+    repoForm.resetFields();
+    setModalOpen(true);
+  };
+
+  // 打开编辑 Modal（回填，token 留空提示"留空不修改"）
+  const openEditModal = (repo: RepoConfig) => {
+    setEditingRepo(repo);
+    repoForm.setFieldsValue({
+      name: repo.name,
+      baseUrl: repo.baseUrl,
+      token: '', // 脱敏：留空不修改
+      projectId: repo.projectId,
+      repoDir: repo.repoDir || '',
+    });
+    setModalOpen(true);
+  };
+
+  // 提交新增 / 编辑
+  const handleSubmit = async () => {
+    let values: Record<string, unknown>;
+    try {
+      values = await repoForm.validateFields();
+    } catch {
+      // 校验失败由 antd 表单内联提示，不额外 message
+      return;
+    }
+    setSubmitting(true);
+    try {
+      if (editingRepo) {
+        // 编辑：token 留空则不传，保持原值
+        const patch: Partial<RepoConfig> = {
+          name: values.name as string,
+          baseUrl: values.baseUrl as string,
+          projectId: values.projectId as number | string,
+          repoDir: (values.repoDir as string) || undefined,
+        };
+        if (values.token) {
+          patch.token = values.token as string;
+        }
+        const res = await codehubApi.updateRepo(editingRepo.repoId, patch);
+        if (res?.ok) {
+          message.success('仓库更新成功');
+          setModalOpen(false);
+          await refreshList();
+        } else {
+          message.error(res?.error || '更新失败');
+        }
+      } else {
+        const res = await codehubApi.addRepo({
+          name: values.name as string,
+          baseUrl: values.baseUrl as string,
+          token: values.token as string,
+          projectId: values.projectId as number | string,
+          repoDir: (values.repoDir as string) || undefined,
+        });
+        if (res?.ok) {
+          message.success('仓库新增成功');
+          setModalOpen(false);
+          await refreshList();
+        } else {
+          message.error(res?.error || '新增失败');
+        }
+      }
+    } catch (err) {
+      message.error(`操作失败: ${err instanceof Error ? err.message : '未知错误'}`);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // 激活仓库：成功后同步 store + 刷新列表
+  const handleActivate = async (repoId: string) => {
+    try {
+      const res = await codehubApi.activateRepo(repoId);
+      if (res?.ok) {
+        message.success('已激活该仓库');
+        setActiveRepoId(res.activeRepoId ?? repoId);
+        await refreshList();
+      } else {
+        message.error(res?.error || '激活失败');
+      }
+    } catch (err) {
+      message.error(`激活失败: ${err instanceof Error ? err.message : '未知错误'}`);
+    }
+  };
+
+  // 删除仓库：后端会自动切换 active，前端刷新后同步 store
+  const handleDelete = async (repoId: string) => {
+    try {
+      const res = await codehubApi.deleteRepoConfig(repoId);
+      if (res?.ok) {
+        message.success('仓库已删除');
+        setActiveRepoId(res.activeRepoId ?? null);
+        await refreshList();
+      } else {
+        message.error(res?.error || '删除失败');
+      }
+    } catch (err) {
+      message.error(`删除失败: ${err instanceof Error ? err.message : '未知错误'}`);
+    }
+  };
+
+  // 测试连接：对选中仓库发起连接测试
+  const handleTestRepo = async (record: RepoConfig) => {
+    const key = `testRepo-${record.repoId}`;
+    message.loading({ content: '正在测试连接...', key, duration: 0 });
+    try {
+      const res = await codehubApi.testConnection(record.repoId);
+      if (res?.ok) {
+        message.success({ content: `仓库「${record.name}」连接成功`, key });
+      } else {
+        message.error({ content: res?.message || `仓库「${record.name}」连接失败`, key });
+      }
+    } catch (err) {
+      message.error({
+        content: `连接失败: ${err instanceof Error ? err.message : '未知错误'}`,
+        key,
+      });
+    }
+  };
+
+  const columns: TableProps<RepoConfig>['columns'] = [
+    {
+      title: '名称',
+      dataIndex: 'name',
+      key: 'name',
+      width: 180,
+    },
+    {
+      title: 'baseUrl',
+      dataIndex: 'baseUrl',
+      key: 'baseUrl',
+      ellipsis: true,
+    },
+    {
+      title: 'projectId',
+      dataIndex: 'projectId',
+      key: 'projectId',
+      width: 180,
+    },
+    {
+      title: '状态',
+      key: 'status',
+      width: 110,
+      render: (_, record) =>
+        record.repoId === activeRepoId ? (
+          <Tag color="green" icon={<CheckOutlined />}>
+            当前激活
+          </Tag>
+        ) : (
+          <Tag>未激活</Tag>
+        ),
+    },
+    {
+      title: '操作',
+      key: 'action',
+      width: 300,
+      render: (_, record) => (
+        <Space size="small" wrap>
+          {record.repoId !== activeRepoId && (
+            <Button
+              size="small"
+              type="link"
+              icon={<CheckOutlined />}
+              onClick={() => handleActivate(record.repoId)}
+            >
+              激活
+            </Button>
+          )}
+          <Button
+            size="small"
+            type="link"
+            icon={<EditOutlined />}
+            onClick={() => openEditModal(record)}
+          >
+            编辑
+          </Button>
+          <Button
+            size="small"
+            type="link"
+            icon={<ThunderboltOutlined />}
+            onClick={() => handleTestRepo(record)}
+          >
+            测试连接
+          </Button>
+          <Popconfirm
+            title="确认删除该仓库配置？"
+            description="删除后不可恢复，关联的本地克隆不会被删除。"
+            okText="删除"
+            okButtonProps={{ danger: true }}
+            cancelText="取消"
+            onConfirm={() => handleDelete(record.repoId)}
+          >
+            <Button size="small" type="link" danger icon={<DeleteOutlined />}>
+              删除
+            </Button>
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ];
+
+  return (
+    <div style={{ maxWidth: 900 }}>
+      <Alert
+        type="info"
+        showIcon
+        message="代码仓库管理"
+        description="管理多个 CodeHub 仓库配置，可激活其中一个作为当前操作目标。"
+        style={{ marginBottom: 16 }}
+      />
+
+      <div style={{ marginBottom: 16 }}>
+        <Button type="primary" icon={<PlusOutlined />} onClick={openAddModal}>
+          新增仓库
+        </Button>
+      </div>
+
+      <Table
+        rowKey="repoId"
+        columns={columns}
+        dataSource={reposConfig}
+        loading={reposQuery.isLoading}
+        pagination={false}
+        size="middle"
+        locale={{
+          emptyText: (
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={'暂无仓库配置，点击上方「新增仓库」添加'}
+              style={{ padding: 32 }}
+            />
+          ),
+        }}
+      />
+
+      <Modal
+        title={editingRepo ? '编辑仓库' : '新增仓库'}
+        open={modalOpen}
+        onOk={handleSubmit}
+        onCancel={() => setModalOpen(false)}
+        confirmLoading={submitting}
+        okText="保存"
+        cancelText="取消"
+        destroyOnClose
+      >
+        <Form form={repoForm} layout="vertical" preserve={false}>
+          <Form.Item
+            label="名称"
+            name="name"
+            rules={[{ required: true, message: '请输入仓库名称' }]}
+            extra="用于在列表中标识该仓库"
+          >
+            <Input placeholder="例如：前端主仓库" />
+          </Form.Item>
+
+          <Form.Item
+            label="CodeHub 地址"
+            name="baseUrl"
+            rules={[{ required: true, message: '请输入 CodeHub 地址' }]}
+          >
+            <Input placeholder="https://codehub.example.com" />
+          </Form.Item>
+
+          <Form.Item
+            label="Token"
+            name="token"
+            rules={editingRepo ? [] : [{ required: true, message: '请输入 Token' }]}
+            extra={editingRepo ? '留空则不修改原 Token' : '在 CodeHub 个人设置中生成的访问令牌'}
+          >
+            <Input.Password placeholder={editingRepo ? '留空不修改' : 'Enter your token'} />
+          </Form.Item>
+
+          <Form.Item
+            label="项目 ID / 路径"
+            name="projectId"
+            rules={[{ required: true, message: '请输入项目 ID' }]}
+            extra="例如：group/project-name 或数字 ID"
+          >
+            <Input placeholder="group/project-name" />
+          </Form.Item>
+
+          <Form.Item label="本地仓库目录" name="repoDir" extra="可选，克隆存放目录（相对路径）">
+            <Input placeholder=".codehub-repos/xxx" />
+          </Form.Item>
+        </Form>
+      </Modal>
+    </div>
+  );
 }
 
 function Settings() {
@@ -241,6 +584,16 @@ function Settings() {
   };
 
   const tabItems = [
+    {
+      key: 'repos',
+      label: (
+        <Space>
+          <FolderOutlined />
+          <span>代码仓库管理</span>
+        </Space>
+      ),
+      children: <ReposManager />,
+    },
     {
       key: 'codehub',
       label: (

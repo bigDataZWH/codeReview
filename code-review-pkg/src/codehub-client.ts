@@ -226,6 +226,22 @@ export class CodeHubClient {
     });
   }
 
+  /**
+   * 合入 MR
+   * @param mrIid MR 的 iid
+   * @param mergeMethod 合入方式：merge | squash | rebase（默认 squash）
+   */
+  async mergeMR(
+    mrIid: number | string,
+    mergeMethod: 'merge' | 'squash' | 'rebase' = 'squash',
+  ): Promise<any> {
+    // 调用 PUT /merge_requests/:iid/merge，body 携带 merge_method
+    return this.request<any>(`/merge_requests/${mrIid}/merge`, {
+      method: 'PUT',
+      body: JSON.stringify({ merge_method: mergeMethod }),
+    });
+  }
+
   async getProject(): Promise<CodeHubProject> {
     return this.request<CodeHubProject>('', {
       method: 'GET',

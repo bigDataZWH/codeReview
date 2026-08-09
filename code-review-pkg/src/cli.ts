@@ -78,6 +78,8 @@ import {
 } from './alert-notifier.js';
 import {
   loadCodeHubConfig,
+  saveCodeHubConfig,
+  getActiveRepo,
   isCodeHubConfigValid,
 } from './codehub-config.js';
 import { CodeHubClient } from './codehub-client.js';
@@ -85,6 +87,7 @@ import {
   publishFindingsAsIssue,
   saveReportToFile,
 } from './codehub-publisher.js';
+import { getSyncScheduler } from './codehub-routes.js';
 import { runWithConcurrency } from './orchestrator.js';
 import { getDefaultParallelism } from './parallel-tuner.js';
 
@@ -1108,6 +1111,40 @@ Subcommands:
     process.exit(1);
   }
 
+  // Task 10.1：--sync-interval <ms> 参数（默认 600000，最小 60000，低于则强制并 warning）
+  const MIN_SYNC_INTERVAL_MS = 60000;
+  const syncIntervalStr = getArg('--sync-interval');
+  let syncIntervalMs: number | undefined;
+  if (syncIntervalStr) {
+    syncIntervalMs = parseInt(syncIntervalStr, 10);
+    if (Number.isNaN(syncIntervalMs) || syncIntervalMs <= 0) {
+      console.error(
+        `Error: invalid --sync-interval value '${syncIntervalStr}'. Must be a positive number of milliseconds.`,
+      );
+      process.exit(1);
+    }
+    if (syncIntervalMs < MIN_SYNC_INTERVAL_MS) {
+      console.warn(
+        `[serve] --sync-interval ${syncIntervalMs}ms is below minimum ${MIN_SYNC_INTERVAL_MS}ms, forcing to ${MIN_SYNC_INTERVAL_MS}ms`,
+      );
+      syncIntervalMs = MIN_SYNC_INTERVAL_MS;
+    }
+  }
+
+  // 读取多仓配置（用于校验仓库列表与同步间隔持久化）
+  const serveCodehubConfig = loadCodeHubConfig(configPath);
+  // 若 --sync-interval 与配置文件 syncIntervalMs 不同，持久化到配置文件
+  if (
+    syncIntervalMs !== undefined &&
+    syncIntervalMs !== serveCodehubConfig.syncIntervalMs
+  ) {
+    const prev = serveCodehubConfig.syncIntervalMs;
+    saveCodeHubConfig({ syncIntervalMs }, configPath);
+    console.log(
+      `[serve] sync interval persisted: ${prev}ms -> ${syncIntervalMs}ms`,
+    );
+  }
+
   console.log(`[serve] starting API server on http://${host}:${port}`);
   console.log(`[serve] endpoints:`);
   console.log(`  POST /api/v1/review    触发代码审查（接受 diff 文本）`);
@@ -1137,12 +1174,32 @@ Subcommands:
       enableStatic: !noStatic && !!staticDir,
     });
 
-    // 优雅关闭：收到 SIGINT/SIGTERM 时停止服务器
+    // Task 10.2：启动 MR 同步调度器单例（定时拉取 CodeHub MR 列表）
+    const scheduler = getSyncScheduler();
+    if (serveCodehubConfig.repos.length === 0) {
+      console.warn(
+        `[serve] no repos configured; MR sync scheduler will start but syncOnce skips empty repos`,
+      );
+    }
+    scheduler.start();
+    const schedulerStatus = scheduler.getStatus();
+    console.log(
+      `[serve] MR sync scheduler started: interval=${schedulerStatus.syncIntervalMs}ms, ` +
+        `first sync in ~${Math.round(schedulerStatus.syncIntervalMs / 1000)}s`,
+    );
+
+    // 优雅关闭：收到 SIGINT/SIGTERM 时停止调度器与服务器
     let shuttingDown = false;
     const shutdown = async (signal: string) => {
       if (shuttingDown) return;
       shuttingDown = true;
       console.log(`[serve] received ${signal}, shutting down...`);
+      // 停止 MR 同步调度器（幂等，多次调用安全）
+      try {
+        getSyncScheduler().stop();
+      } catch {
+        // 忽略调度器停止错误，不影响后续服务器关闭
+      }
       try {
         await stopApiServer(server);
       } catch (err) {
@@ -1327,17 +1384,22 @@ Subcommands:
   }
 
   const fullConfig = loadCodeHubConfig(configPath);
-  if (!isCodeHubConfigValid(fullConfig)) {
+  // 多仓结构：从 active 仓库提取连接配置进行校验与 client 初始化
+  const activeRepo = getActiveRepo(fullConfig);
+  const codehubConn = activeRepo
+    ? {
+        baseUrl: activeRepo.baseUrl,
+        token: activeRepo.token,
+        projectId: String(activeRepo.projectId),
+      }
+    : null;
+  if (!isCodeHubConfigValid(codehubConn)) {
     console.error(
       'Error: CodeHub config is not valid. Please configure baseUrl, token, and projectId.',
     );
     process.exit(1);
   }
-  const client = new CodeHubClient({
-    baseUrl: fullConfig.baseUrl,
-    token: fullConfig.token,
-    projectId: fullConfig.projectId,
-  });
+  const client = new CodeHubClient(codehubConn!);
 
   // 如有 report 文件，直接读取内容作为 issue description（不调用 publishFindingsAsIssue）
   if (fileFlag) {
@@ -1430,17 +1492,22 @@ Subcommands:
   }
 
   const fullConfig = loadCodeHubConfig(configPath);
-  if (!isCodeHubConfigValid(fullConfig)) {
+  // 多仓结构：从 active 仓库提取连接配置进行校验与 client 初始化
+  const activeRepo = getActiveRepo(fullConfig);
+  const codehubConn = activeRepo
+    ? {
+        baseUrl: activeRepo.baseUrl,
+        token: activeRepo.token,
+        projectId: String(activeRepo.projectId),
+      }
+    : null;
+  if (!isCodeHubConfigValid(codehubConn)) {
     console.error(
       'Error: CodeHub config is not valid. Please configure baseUrl, token, and projectId.',
     );
     process.exit(1);
   }
-  const client = new CodeHubClient({
-    baseUrl: fullConfig.baseUrl,
-    token: fullConfig.token,
-    projectId: fullConfig.projectId,
-  });
+  const client = new CodeHubClient(codehubConn!);
 
   interface BatchResultItem {
     mrIid: number;
@@ -1577,13 +1644,14 @@ Usage:
   code-review metrics --sessions <json> --findings <json> --feedback <json> [--token-consumed <number>]  Generate review metrics
   code-review dashboard        < input.json  Generate dashboard data with trends and charts
   code-review rules <list|show|enable|disable|override> [options]  Customize review rules
-  code-review serve [--port <port>] [--hostname <host>] [--config <path>] [--repo-dir <dir>] [--opencode-config <path>] [--static-dir <dir>] [--no-codehub] [--no-static]
+  code-review serve [--port <port>] [--hostname <host>] [--config <path>] [--repo-dir <dir>] [--opencode-config <path>] [--static-dir <dir>] [--sync-interval <ms>] [--no-codehub] [--no-static]
                                              Start HTTP API server (default: 127.0.0.1:3000)
                                              --hostname: bind address (e.g. 0.0.0.0 for all interfaces)
                                              --config: CodeHub config file path
                                              --repo-dir: local repo directory
                                              --opencode-config: opencode.jsonc config file path (default: opencode-config/opencode.jsonc)
                                              --static-dir: Web UI static files directory
+                                             --sync-interval: MR sync interval in ms (default: 600000, min: 60000)
                                              --no-codehub: disable CodeHub integration
                                              --no-static: disable static file serving
   code-review alert --severity <critical|high|medium|low|info> --message <text> [--title <title>] [--source <name>] [--slack-url <url>] [--email-to <addr>] [--pagerduty-key <key>]  Send alert notification

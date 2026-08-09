@@ -5,17 +5,29 @@ import {
   CloseCircleOutlined,
   WarningOutlined,
   BugOutlined,
+  StopOutlined,
 } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import ReactECharts from 'echarts-for-react';
-import { codehubApi, type DashboardStats } from '@/api/codehub';
+import { useNavigate } from 'react-router-dom';
+import { codehubApi, type DashboardStats, type ReportsOverview } from '@/api/codehub';
 
 function Dashboard() {
+  const navigate = useNavigate();
   const { data, isLoading, error } = useQuery({
     queryKey: ['dashboard'],
     queryFn: () => codehubApi.getDashboard() as Promise<{ ok: boolean; dashboard: DashboardStats }>,
     retry: false,
   });
+
+  // 报表总览：用于接纳率/拦截数卡片。报表数据可能为空，失败/加载中时静默降级为占位
+  const { data: reportsData } = useQuery({
+    queryKey: ['reports-overview'],
+    queryFn: () =>
+      codehubApi.getReportsOverview() as Promise<{ ok: boolean; overview: ReportsOverview }>,
+    retry: false,
+  });
+  const overview = reportsData?.overview;
 
   if (isLoading) {
     return (
@@ -124,6 +136,43 @@ function Dashboard() {
               value={dashboard.totalFindings}
               prefix={<BugOutlined style={{ color: '#fa8c16' }} />}
               valueStyle={{ color: '#fa8c16' }}
+            />
+          </Card>
+        </Col>
+      </Row>
+
+      {/* 报表卡片：问题单接纳率 / 拦截数量，点击跳转报表页 */}
+      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+        <Col xs={24} sm={12} md={6}>
+          <Card
+            hoverable
+            style={{ cursor: 'pointer' }}
+            onClick={() => navigate('/reports')}
+          >
+            <Statistic
+              title="问题单接纳率"
+              value={overview ? `${overview.acceptanceRate.toFixed(1)}%` : '-'}
+              prefix={<CheckCircleOutlined style={{ color: '#52c41a' }} />}
+              valueStyle={{ color: '#52c41a' }}
+            />
+            {overview && (
+              <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>
+                {overview.acceptanceNumerator}/{overview.acceptanceDenominator}
+              </div>
+            )}
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} md={6}>
+          <Card
+            hoverable
+            style={{ cursor: 'pointer' }}
+            onClick={() => navigate('/reports')}
+          >
+            <Statistic
+              title="拦截数量"
+              value={overview ? overview.interceptionCount : '-'}
+              prefix={<StopOutlined style={{ color: '#ff4d4f' }} />}
+              valueStyle={{ color: '#ff4d4f' }}
             />
           </Card>
         </Col>

@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { Card, Tooltip, Tag, Space } from 'antd';
 import { WarningOutlined } from '@ant-design/icons';
 import type { DiffFile } from '@/api/codehub';
@@ -16,6 +16,8 @@ interface Finding {
 interface DiffViewerProps {
   diffFile?: DiffFile;
   findings?: Finding[];
+  /** 需要高亮并滚动定位到的行号（new file 行号） */
+  highlightLine?: number | null;
 }
 
 interface DiffLine {
@@ -91,8 +93,9 @@ function parseDiff(diffText: string): DiffLine[] {
   return lines;
 }
 
-function DiffViewer({ diffFile, findings = [] }: DiffViewerProps) {
+function DiffViewer({ diffFile, findings = [], highlightLine = null }: DiffViewerProps) {
   const [hoveredLine, setHoveredLine] = useState<number | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const diffLines = useMemo(() => {
     if (!diffFile?.diff) return [];
@@ -107,6 +110,17 @@ function DiffViewer({ diffFile, findings = [] }: DiffViewerProps) {
     }
     return result;
   }, [findings]);
+
+  // 高亮目标行变化时滚动定位到该行（通过 data-new-line 查询）
+  useEffect(() => {
+    if (!highlightLine || !containerRef.current) return;
+    const target = containerRef.current.querySelector<HTMLElement>(
+      `tr[data-new-line="${highlightLine}"]`,
+    );
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [highlightLine, diffFile]);
 
   if (!diffFile) {
     return null;
@@ -157,6 +171,7 @@ function DiffViewer({ diffFile, findings = [] }: DiffViewerProps) {
         </div>
       ) : (
         <div
+          ref={containerRef}
           style={{
             fontFamily: 'Consolas, Monaco, "Courier New", monospace',
             fontSize: 13,
@@ -169,12 +184,22 @@ function DiffViewer({ diffFile, findings = [] }: DiffViewerProps) {
               {diffLines.map((line, idx) => {
                 const lineFindings = line.newLine ? findingsByNewLine[line.newLine] ?? [] : [];
                 const hasFindings = lineFindings.length > 0;
+                // 是否为高亮目标行
+                const isHighlighted =
+                  highlightLine != null && line.newLine === highlightLine;
 
                 return (
                   <tr
                     key={idx}
+                    data-new-line={line.newLine ?? undefined}
                     style={{
-                      backgroundColor: getLineBg(line.type),
+                      // 高亮目标行：使用更醒目的黄色背景 + 左侧蓝色边框
+                      backgroundColor: isHighlighted
+                        ? '#fff7c2'
+                        : getLineBg(line.type),
+                      boxShadow: isHighlighted
+                        ? 'inset 3px 0 0 #1677ff'
+                        : undefined,
                       cursor: hasFindings ? 'pointer' : 'default',
                     }}
                     onMouseEnter={() => setHoveredLine(line.newLine ?? null)}

@@ -8,8 +8,14 @@ import { createHash } from 'node:crypto';
 
 import type { Finding } from './types.js';
 import type { CodeHubClient } from './codehub-client.js';
+import { createFindingsHistoryStore } from './findings-history-store.js';
+import type { FindingsHistoryStore } from './findings-history-store.js';
 
 const execFile = promisify(execFileCb);
+
+// Task 4：findings 历史记录 store 单例
+// 持久化每次检视产出的 findings，支撑问题单接纳率、拦截数量等报表指标计算。
+export const historyStore: FindingsHistoryStore = createFindingsHistoryStore();
 
 /**
  * 为 finding 生成稳定 ID（基于 file:line:ruleId 哈希，取前 12 位 hex）。
@@ -202,19 +208,25 @@ function normalizeSeverity(s: string): Finding['severity'] {
  * @param client CodeHub 客户端
  * @param mrIid MR 内部序号
  * @param options.opencodeCwd opencode 运行工作目录（默认 process.cwd()）
+ * @param options.repoId 仓库 ID（用于历史记录关联，默认空字符串）
+ * @param options.author MR 作者（用于历史记录关联，未传则从 MR 详情获取，再降级为 'unknown'）
  */
 export async function runReviewViaOpencode(
   client: CodeHubClient,
   mrIid: number,
-  options: { opencodeCwd?: string } = {},
+  options: { opencodeCwd?: string; repoId?: string; author?: string } = {},
 ): Promise<Finding[]> {
   const opencodeCwd = options.opencodeCwd ?? process.cwd();
+  const repoId = options.repoId ?? '';
 
   // 1. 拉取 MR diff
   const mrDiff = await client.getMRDiff(mrIid);
 
-  // 2. 拉取 MR 信息（用于标题，失败容忍）
-  await client.getMR(mrIid).catch(() => undefined);
+  // 2. 拉取 MR 信息（用于标题与作者信息，失败容忍）
+  const mrInfo = await client.getMR(mrIid).catch(() => undefined);
+  // 解析作者：优先入参，其次 MR 详情，最后降级 'unknown'
+  const author =
+    options.author ?? mrInfo?.author?.username ?? mrInfo?.author?.name ?? 'unknown';
 
   // 3. 将 diff 写入临时文件
   const tmpFile = join(tmpdir(), `mr-${mrIid}-diff.patch`);
@@ -261,6 +273,22 @@ export async function runReviewViaOpencode(
         f.id = generateFindingId(f.file, f.line, f.ruleId);
       }
     }
+
+    // 写入 findings 历史记录（Task 4：支撑报表指标计算）
+    // 每个 finding 转为一条历史记录，submitted/resolved/blockedMerge 初始均为 false。
+    const reviewedAt = new Date().toISOString();
+    historyStore.addBatch(
+      findings.map((f) => ({
+        mrIid,
+        repoId,
+        author,
+        finding: f,
+        reviewedAt,
+        submitted: false,
+        resolved: false,
+        blockedMerge: false,
+      })),
+    );
 
     return findings;
   } finally {

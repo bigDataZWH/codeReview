@@ -12,6 +12,7 @@ import {
   message,
   Popconfirm,
   Tooltip,
+  Empty,
 } from 'antd';
 import {
   FolderOutlined,
@@ -256,7 +257,15 @@ function Repos() {
           dataSource={data?.repos ?? []}
           loading={isLoading}
           size="middle"
-          locale={{ emptyText: '暂无本地仓库，点击"克隆仓库"开始' }}
+          locale={{
+            emptyText: (
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description={'暂无本地仓库，点击右上角「克隆仓库」开始'}
+                style={{ padding: 32 }}
+              />
+            ),
+          }}
         />
       </Card>
 

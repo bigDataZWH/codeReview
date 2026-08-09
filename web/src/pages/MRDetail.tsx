@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import {
   Card,
   Tag,
@@ -14,6 +14,11 @@ import {
   Badge,
   Tooltip,
   Divider,
+  Modal,
+  Select,
+  Radio,
+  Switch,
+  Typography,
   message,
 } from 'antd';
 import {
@@ -30,6 +35,8 @@ import {
   FileTextOutlined,
   SaveOutlined,
   FlagOutlined,
+  UploadOutlined,
+  ExclamationCircleOutlined,
 } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -39,7 +46,11 @@ import {
   type CodeHubMR,
   type DiffFile,
   type CodeHubComment,
+  type BatchCommentResult,
+  type MergeCheckResult,
+  type MergeResult,
 } from '@/api/codehub';
+import { useAppStore } from '@/store/app';
 import DiffViewer from '@/components/diff/DiffViewer';
 
 const { TextArea } = Input;
@@ -75,6 +86,7 @@ interface Finding {
   severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
   suggestion?: string;
   ruleId?: string;
+  submitted?: boolean;
 }
 
 function MRDetail() {
@@ -84,6 +96,29 @@ function MRDetail() {
   const [commentText, setCommentText] = useState('');
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [commentingFindingId, setCommentingFindingId] = useState<string | null>(null);
+
+  // 当前激活的 Tab（受控，用于 findings → diff 联动切换）
+  const [activeTab, setActiveTab] = useState<string>('diff');
+  // findings 联动定位目标：点击 finding 后切到 diff Tab 并定位到对应行
+  const [targetFile, setTargetFile] = useState<string | null>(null);
+  const [targetLine, setTargetLine] = useState<number | null>(null);
+
+  // 多仓：当前激活仓库 ID（来自 store）
+  const activeRepoId = useAppStore((s) => s.activeRepoId);
+
+  // 一键提交全部意见结果（failed>0 时弹 Modal 展示详情）
+  const [batchResult, setBatchResult] = useState<BatchCommentResult | null>(null);
+
+  // 合入 MR 相关状态
+  const [mergeModalOpen, setMergeModalOpen] = useState(false);
+  const [mergeCheckResult, setMergeCheckResult] = useState<MergeCheckResult | null>(null);
+  const [mergeMethod, setMergeMethod] = useState<'merge' | 'squash' | 'rebase'>('squash');
+  const [forceMerge, setForceMerge] = useState(false);
+  const [mergeError, setMergeError] = useState<string | null>(null);
+
+  // findings 筛选
+  const [severityFilter, setSeverityFilter] = useState<string[]>([]);
+  const [statusFilter, setStatusFilter] = useState<'all' | 'submitted' | 'unsubmitted'>('all');
 
   const mrIidNum = parseInt(mrIid || '0', 10);
 
@@ -189,10 +224,86 @@ function MRDetail() {
     },
   });
 
+  // 一键提交全部意见
+  const batchSubmitMutation = useMutation({
+    mutationFn: () => codehubApi.batchSubmitComments(mrIidNum, activeRepoId ?? undefined),
+    onSuccess: (res: BatchCommentResult) => {
+      if (res.ok) {
+        message.success(`成功提交 ${res.success}/${res.total} 条`);
+        // 存在失败项时弹 Modal 展示详情
+        if (res.failed > 0) {
+          setBatchResult(res);
+        }
+        // 刷新评论列表与 findings（更新 submitted 状态）
+        queryClient.invalidateQueries({ queryKey: ['mr-comments', mrIidNum] });
+        queryClient.invalidateQueries({ queryKey: ['mr-findings', mrIidNum] });
+      } else {
+        message.error('批量提交评论失败');
+      }
+    },
+    onError: (err) => {
+      message.error(`批量提交失败: ${err instanceof Error ? err.message : '未知错误'}`);
+    },
+  });
+
+  // 合入前检查（点击"合入 MR"触发，成功后弹出确认 Modal）
+  const mergeCheckMutation = useMutation({
+    mutationFn: () => codehubApi.mergeCheck(mrIidNum, activeRepoId ?? undefined),
+    onSuccess: (res: MergeCheckResult) => {
+      setMergeCheckResult(res);
+      setMergeMethod('squash');
+      setForceMerge(false);
+      setMergeError(null);
+      setMergeModalOpen(true);
+    },
+    onError: (err) => {
+      message.error(`合入检查失败: ${err instanceof Error ? err.message : '未知错误'}`);
+    },
+  });
+
+  // 执行合入（阻断时后端返回 409，在 Modal 内显示错误）
+  const mergeMutation = useMutation({
+    mutationFn: (params: { mergeMethod: 'merge' | 'squash' | 'rebase'; force: boolean }) =>
+      codehubApi.mergeMR(mrIidNum, params, activeRepoId ?? undefined),
+    onSuccess: (res: MergeResult) => {
+      if (res.ok && res.merged) {
+        message.success('MR 已成功合入');
+        setMergeModalOpen(false);
+        queryClient.invalidateQueries({ queryKey: ['mr', mrIidNum] });
+      } else {
+        setMergeError('合入未成功，请稍后重试');
+      }
+    },
+    onError: (err: unknown) => {
+      // 409 阻断等错误：在 Modal 内展示
+      const anyErr = err as { response?: { data?: { error?: string } } };
+      const msg =
+        anyErr?.response?.data?.error ||
+        (err instanceof Error ? err.message : '合入失败');
+      setMergeError(msg);
+    },
+  });
+
   const changes = diffData?.changes ?? [];
   const findings = findingsData?.findings ?? [];
   const comments = commentsData?.comments ?? [];
   const mr = mrData?.mr;
+
+  // 点击 finding 位置链接：切换到 diff Tab + 选中目标文件 + 高亮定位到目标行
+  const handleLocateFinding = (file: string, line: number) => {
+    setTargetFile(file);
+    setTargetLine(line);
+    setSelectedFile(file);
+    setActiveTab('diff');
+    message.info(`定位到 ${file}:${line}`);
+  };
+
+  // 切换到 diff Tab 后，若设置了 targetFile，自动选中该文件
+  useEffect(() => {
+    if (activeTab === 'diff' && targetFile) {
+      setSelectedFile(targetFile);
+    }
+  }, [activeTab, targetFile]);
 
   const fileStats = useMemo(() => {
     let added = 0;
@@ -224,6 +335,28 @@ function MRDetail() {
     return result;
   }, [findings]);
 
+  // 是否存在 submitted 字段（决定状态筛选是否展开为 已提交/未提交）
+  const hasSubmittedField = useMemo(
+    () => findings.some((f) => typeof f.submitted === 'boolean'),
+    [findings],
+  );
+
+  // 按严重级别与状态筛选后的 findings
+  const filteredFindings = useMemo(() => {
+    return findings.filter((f) => {
+      if (severityFilter.length > 0 && !severityFilter.includes(f.severity)) {
+        return false;
+      }
+      if (statusFilter === 'submitted' && f.submitted !== true) {
+        return false;
+      }
+      if (statusFilter === 'unsubmitted' && f.submitted === true) {
+        return false;
+      }
+      return true;
+    });
+  }, [findings, severityFilter, statusFilter]);
+
   if (!mrIidNum) {
     return <Alert type="error" message="无效的 MR ID" />;
   }
@@ -240,8 +373,8 @@ function MRDetail() {
       ),
       children: (
         <Spin spinning={diffLoading}>
-          <div style={{ display: 'flex', gap: 16 }}>
-            <div style={{ width: 260, flexShrink: 0 }}>
+          <div className="mr-detail-diff-layout" style={{ display: 'flex', gap: 16 }}>
+            <div className="mr-detail-file-list" style={{ width: 260, flexShrink: 0 }}>
               <Card
                 size="small"
                 title={
@@ -312,6 +445,8 @@ function MRDetail() {
                 <DiffViewer
                   diffFile={changes.find((f) => f.new_path === selectedFile)}
                   findings={findingsByFile[selectedFile] ?? []}
+                  // 仅当目标文件与当前选中文件一致时才传高亮行号，避免切换文件时误高亮
+                  highlightLine={targetFile === selectedFile ? targetLine : null}
                 />
               ) : (
                 <Card>
@@ -386,8 +521,64 @@ function MRDetail() {
               >
                 提 Issue
               </Button>
+              <Button
+                icon={<UploadOutlined />}
+                loading={batchSubmitMutation.isPending}
+                disabled={findings.length === 0}
+                onClick={() => batchSubmitMutation.mutate()}
+              >
+                一键提交全部意见
+              </Button>
+              <Button
+                type="primary"
+                icon={<MergeOutlined />}
+                loading={mergeCheckMutation.isPending}
+                disabled={mr?.state === 'merged'}
+                onClick={() => mergeCheckMutation.mutate()}
+              >
+                合入 MR
+              </Button>
             </Space>
           </div>
+
+          {/* findings 筛选行 */}
+          {findings.length > 0 && (
+            <div style={{ marginBottom: 16, display: 'flex', gap: 12, alignItems: 'center' }}>
+              <span style={{ color: '#666', fontSize: 13 }}>筛选：</span>
+              <Select
+                mode="multiple"
+                allowClear
+                placeholder="严重级别"
+                style={{ minWidth: 220 }}
+                value={severityFilter}
+                onChange={(val) => setSeverityFilter(val as string[])}
+                options={[
+                  { label: 'CRITICAL', value: 'critical' },
+                  { label: 'HIGH', value: 'high' },
+                  { label: 'MEDIUM', value: 'medium' },
+                  { label: 'LOW', value: 'low' },
+                  { label: 'INFO', value: 'info' },
+                ]}
+              />
+              {hasSubmittedField && (
+                <Select
+                  style={{ width: 140 }}
+                  value={statusFilter}
+                  onChange={(val) =>
+                    setStatusFilter(val as 'all' | 'submitted' | 'unsubmitted')
+                  }
+                  options={[
+                    { label: '全部状态', value: 'all' },
+                    { label: '已提交', value: 'submitted' },
+                    { label: '未提交', value: 'unsubmitted' },
+                  ]}
+                />
+              )}
+              <span style={{ color: '#999', fontSize: 12 }}>
+                共 {filteredFindings.length} 条
+              </span>
+            </div>
+          )}
 
           {findingsLoading ? (
             <div style={{ textAlign: 'center', padding: 40 }}>
@@ -401,9 +592,15 @@ function MRDetail() {
                 <p style={{ fontSize: 12 }}>请在 opencode 中执行 /review-pr 进行代码审查</p>
               </div>
             </Card>
+          ) : filteredFindings.length === 0 ? (
+            <Card>
+              <div style={{ textAlign: 'center', padding: 40, color: '#999' }}>
+                <p>无匹配的筛选结果</p>
+              </div>
+            </Card>
           ) : (
             <List
-              dataSource={findings}
+              dataSource={filteredFindings}
               renderItem={(item, idx) => (
                 <Card
                   key={idx}
@@ -417,7 +614,14 @@ function MRDetail() {
                   }
                   extra={
                     <Space>
-                      <span style={{ color: '#999', fontSize: 12 }}>{item.file}:{item.line}</span>
+                      <Typography.Link
+                        // 点击位置链接：切到 diff Tab + 定位到对应文件行
+                        onClick={() => handleLocateFinding(item.file, item.line)}
+                        style={{ fontSize: 12 }}
+                        title={`点击定位到 ${item.file}:${item.line}`}
+                      >
+                        {item.file}:{item.line}
+                      </Typography.Link>
                       <Button
                         size="small"
                         icon={<SendOutlined />}
@@ -605,8 +809,191 @@ function MRDetail() {
       </Spin>
 
       <Card style={{ marginTop: 16 }} bodyStyle={{ padding: 0 }}>
-        <Tabs items={tabItems} defaultActiveKey="diff" style={{ padding: '0 16px' }} />
+        <Tabs
+          items={tabItems}
+          activeKey={activeTab}
+          onChange={setActiveTab}
+          style={{ padding: '0 16px' }}
+        />
       </Card>
+
+      {/* 批量提交评论结果详情 Modal */}
+      <Modal
+        title="批量提交评论结果"
+        open={!!batchResult}
+        onCancel={() => setBatchResult(null)}
+        footer={[
+          <Button key="ok" type="primary" onClick={() => setBatchResult(null)}>
+            知道了
+          </Button>,
+        ]}
+      >
+        {batchResult && (
+          <div>
+            <Alert
+              type={batchResult.failed > 0 ? 'warning' : 'success'}
+              showIcon
+              message={`共 ${batchResult.total} 条，成功 ${batchResult.success} 条，失败 ${batchResult.failed} 条`}
+              style={{ marginBottom: 12 }}
+            />
+            {batchResult.failed > 0 && (
+              <List
+                size="small"
+                bordered
+                dataSource={batchResult.results.filter((r) => !r.ok)}
+                renderItem={(r) => (
+                  <List.Item>
+                    <Space direction="vertical" size={0} style={{ width: '100%' }}>
+                      <span style={{ fontSize: 13 }}>
+                        <Tag color="red">失败</Tag>
+                        {r.findingId}
+                      </span>
+                      {r.error && (
+                        <span style={{ color: '#999', fontSize: 12 }}>{r.error}</span>
+                      )}
+                    </Space>
+                  </List.Item>
+                )}
+              />
+            )}
+          </div>
+        )}
+      </Modal>
+
+      {/* 合入 MR 确认 Modal */}
+      <Modal
+        title="合入 MR"
+        open={mergeModalOpen}
+        onCancel={() => {
+          if (!mergeMutation.isPending) {
+            setMergeModalOpen(false);
+            setMergeError(null);
+          }
+        }}
+        footer={[
+          <Button
+            key="cancel"
+            disabled={mergeMutation.isPending}
+            onClick={() => {
+              setMergeModalOpen(false);
+              setMergeError(null);
+            }}
+          >
+            取消
+          </Button>,
+          <Button
+            key="confirm"
+            type="primary"
+            loading={mergeMutation.isPending}
+            disabled={!mergeCheckResult?.canMerge && !forceMerge}
+            onClick={() =>
+              mergeMutation.mutate({ mergeMethod, force: forceMerge })
+            }
+          >
+            确认合入
+          </Button>,
+        ]}
+      >
+        {mergeCheckResult && (
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            {mergeCheckResult.canMerge ? (
+              <Alert type="success" showIcon message="当前 MR 可以合入，未发现阻断性问题" />
+            ) : (
+              <Alert
+                type="error"
+                showIcon
+                message="存在阻断性问题，无法直接合入"
+                description={'可开启下方"强制合入"开关继续合入（不推荐）'}
+              />
+            )}
+
+            {mergeCheckResult.blockingFindings?.length > 0 && (
+              <div>
+                <div style={{ marginBottom: 8, fontWeight: 500 }}>
+                  <ExclamationCircleOutlined style={{ color: '#ff4d4f', marginRight: 6 }} />
+                  阻断性问题（{mergeCheckResult.blockingFindings.length}）
+                </div>
+                <List
+                  size="small"
+                  bordered
+                  dataSource={mergeCheckResult.blockingFindings}
+                  renderItem={(bf, idx) => {
+                    const item = bf as {
+                      severity?: string;
+                      title?: string;
+                      message?: string;
+                      file?: string;
+                      line?: number;
+                    };
+                    return (
+                      <List.Item key={idx}>
+                        <Space wrap>
+                          {item.severity && (
+                            <Tag color={severityColorMap[item.severity] || 'default'}>
+                              {String(item.severity).toUpperCase()}
+                            </Tag>
+                          )}
+                          <span>{item.title || item.message || '未命名问题'}</span>
+                          {(item.file || item.line != null) && (
+                            <span style={{ color: '#999', fontSize: 12 }}>
+                              {item.file}
+                              {item.line != null ? `:${item.line}` : ''}
+                            </span>
+                          )}
+                        </Space>
+                      </List.Item>
+                    );
+                  }}
+                />
+              </div>
+            )}
+
+            {mergeCheckResult.warnings?.length > 0 && (
+              <Alert
+                type="warning"
+                showIcon
+                message="警告"
+                description={
+                  <ul style={{ margin: 0, paddingLeft: 18 }}>
+                    {mergeCheckResult.warnings.map((w, i) => (
+                      <li key={i}>{w}</li>
+                    ))}
+                  </ul>
+                }
+              />
+            )}
+
+            <div>
+              <div style={{ marginBottom: 8 }}>合入方式</div>
+              <Radio.Group
+                value={mergeMethod}
+                onChange={(e) =>
+                  setMergeMethod(e.target.value as 'merge' | 'squash' | 'rebase')
+                }
+                optionType="button"
+                buttonStyle="solid"
+              >
+                <Radio.Button value="merge">Merge</Radio.Button>
+                <Radio.Button value="squash">Squash</Radio.Button>
+                <Radio.Button value="rebase">Rebase</Radio.Button>
+              </Radio.Group>
+            </div>
+
+            {!mergeCheckResult.canMerge && (
+              <div>
+                <Space>
+                  <Switch checked={forceMerge} onChange={setForceMerge} />
+                  <span>强制合入（忽略阻断性问题）</span>
+                </Space>
+              </div>
+            )}
+
+            {mergeError && (
+              <Alert type="error" showIcon message="合入失败" description={mergeError} />
+            )}
+          </Space>
+        )}
+      </Modal>
     </div>
   );
 }

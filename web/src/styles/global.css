@@ -51,3 +51,49 @@ body {
 .code-diff-neutral {
   background-color: #f6f8fa;
 }
+
+/* ===== 响应式布局：窄屏（<768px）适配 ===== */
+/* 窄屏下减小主内容区 padding，让表格/卡片更舒展 */
+@media (max-width: 767px) {
+  /* 主内容区 padding 收紧 */
+  .ant-layout-content {
+    margin: 8px !important;
+  }
+
+  /* 卡片内边距收紧 */
+  .ant-card-body {
+    padding: 12px;
+  }
+
+  /* 表格单元格内边距收紧，便于窄屏展示更多内容 */
+  .ant-table-tbody > tr > td,
+  .ant-table-thead > tr > th {
+    padding: 8px 6px !important;
+  }
+
+  /* 让 antd Tabs 在窄屏下也能横向滚动而非挤压 */
+  .ant-tabs-nav {
+    overflow-x: auto;
+  }
+
+  /* MRDetail diff 区左右两栏在窄屏下改为纵向堆叠 */
+  .mr-detail-diff-layout {
+    flex-direction: column;
+  }
+  .mr-detail-diff-layout .mr-detail-file-list {
+    width: 100% !important;
+    margin-bottom: 12px;
+  }
+
+  /* 顶部工具栏（Card extra）在窄屏下换行 */
+  .ant-card-extra {
+    flex-wrap: wrap;
+  }
+}
+
+/* 中等屏（768px~1023px）：略减 padding */
+@media (min-width: 768px) and (max-width: 1023px) {
+  .ant-layout-content {
+    margin: 12px !important;
+  }
+}

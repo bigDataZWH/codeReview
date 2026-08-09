@@ -27,6 +27,7 @@ import { collectMetrics, type MetricsInput, type ReviewMetrics } from './metrics
 import { FeedbackStore } from './feedback.js';
 import type { Finding, PipelineResult } from './types.js';
 import { createCodeHubRoutesHandler } from './codehub-routes.js';
+import { createReportsRoutesHandler } from './reports-routes.js';
 import { OpencodeProcessManager } from './opencode-process-manager.js';
 
 // ==================== 类型定义 ====================
@@ -224,6 +225,8 @@ export class ApiServer {
   private codeHubHandler: ReturnType<typeof createCodeHubRoutesHandler> | null = null;
   private codeHubFindingsStore = new Map<string, Finding[]>();
   private opencodeProcessManager: OpencodeProcessManager | null = null;
+  // 报表路由处理器（/api/v1/reports/*）— 始终启用，仅依赖 historyStore 与配置读取
+  private reportsHandler: ReturnType<typeof createReportsRoutesHandler> | null = null;
 
   constructor(options: ApiServerOptions = {}) {
     this.port = options.port ?? DEFAULT_API_PORT;
@@ -250,6 +253,11 @@ export class ApiServer {
         opencodeConfigPath: options.opencodeConfigPath,
       });
     }
+
+    // 报表路由处理器（始终启用，复用 codehubConfigPath 以构建 repoId->name 映射）
+    this.reportsHandler = createReportsRoutesHandler({
+      configPath: options.codehubConfigPath,
+    });
   }
 
   /** 启动 HTTP 服务器 */
@@ -361,6 +369,12 @@ export class ApiServer {
       (path.startsWith('/api/v1/codehub') || path.startsWith('/api/v1/opencode'))
     ) {
       const handled = await this.codeHubHandler(req, res);
+      if (handled) return;
+    }
+
+    // 报表路由分发：/api/v1/reports/*
+    if (this.reportsHandler && path.startsWith('/api/v1/reports')) {
+      const handled = await this.reportsHandler(req, res);
       if (handled) return;
     }
 

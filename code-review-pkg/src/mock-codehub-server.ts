@@ -494,6 +494,34 @@ function handleMRDiff(ctx: RouteContext, mrIid: number): boolean {
   return true;
 }
 
+async function handleMRMerge(ctx: RouteContext, mrIid: number): Promise<boolean> {
+  const { state, req, res } = ctx;
+  const mr = state.mrs.get(mrIid);
+  // iid 不存在返回 404
+  if (!mr) {
+    sendError(res, 404, 'Not Found');
+    return true;
+  }
+
+  // 读取请求体（保持与 create 类处理器一致的读取风格，避免请求体未消费）
+  try {
+    await readBody(req);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    sendError(res, 400, message);
+    return true;
+  }
+
+  // 更新 MR 状态为已合入，设置 merged_at 时间戳
+  const now = new Date().toISOString();
+  mr.state = 'merged';
+  mr.merged_at = now;
+  mr.updated_at = now;
+
+  sendJson(res, 200, mr);
+  return true;
+}
+
 function handleNotesList(ctx: RouteContext, mrIid: number): boolean {
   const mr = ctx.state.mrs.get(mrIid);
   if (!mr) {
@@ -735,6 +763,11 @@ async function dispatch(ctx: RouteContext): Promise<boolean> {
       // GET /merge_requests/:iid/diffs — MR diff
       if (segments.length === 7 && segments[6] === 'diffs' && method === 'GET') {
         return handleMRDiff(ctx, mrIid);
+      }
+
+      // PUT /merge_requests/:iid/merge — 合入 MR
+      if (segments.length === 7 && segments[6] === 'merge' && method === 'PUT') {
+        return handleMRMerge(ctx, mrIid);
       }
 
       // /merge_requests/:iid/notes — 评论列表 / 创建评论

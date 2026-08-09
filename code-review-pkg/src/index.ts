@@ -587,16 +587,36 @@ export type {
 // codehub-client (CodeHub API 客户端)
 export { CodeHubClient, createCodeHubClient } from './codehub-client.js';
 
-// codehub-config (CodeHub 配置管理)
+// codehub-config (CodeHub 配置管理 — 多仓结构 + 旧单仓自动迁移)
 export {
   loadCodeHubConfig,
   saveCodeHubConfig,
   getCodeHubConfig,
   isCodeHubConfigValid,
   maskToken,
+  getActiveRepo,
+  getActiveRepoId,
   DEFAULT_CONFIG_FILE,
+  DEFAULT_SYNC_INTERVAL_MS,
 } from './codehub-config.js';
 export type { CodeHubFullConfig } from './codehub-config.js';
+
+// CodeHub 多仓配置类型（RepoConfig / MultiRepoConfig 定义在 types.ts，经通配符已导出，
+// 此处显式 re-export 以便在公共 API 列表中清晰可见）
+export type { RepoConfig, MultiRepoConfig } from './types.js';
+
+// multi-repo-manager（多仓管理器 — 内存中维护多仓配置 + CodeHubClient 缓存）
+export { createMultiRepoManager } from './multi-repo-manager.js';
+export type { MultiRepoManager } from './multi-repo-manager.js';
+
+// mr-sync-scheduler（MR 同步调度器 — setInterval 周期拉取各仓库 MR 列表写入内存 store）
+export { createMRSyncScheduler } from './mr-sync-scheduler.js';
+export type {
+  MRSyncScheduler,
+  SyncStatus,
+  SyncResult,
+  MRSyncStore,
+} from './mr-sync-scheduler.js';
 
 // repo-manager (本地仓库管理)
 export { RepoManager, createRepoManager, DEFAULT_REPO_BASE_DIR } from './repo-manager.js';
@@ -604,6 +624,10 @@ export type { RepoManagerOptions, RepoInfo } from './types.js';
 
 // codehub-routes (CodeHub API 路由)
 export { createCodeHubRoutesHandler } from './codehub-routes.js';
+
+// reports-routes (Task 9.3：报表路由处理器 — /api/v1/reports/* 端点)
+export { createReportsRoutesHandler } from './reports-routes.js';
+export type { ReportsRoutesOptions } from './reports-routes.js';
 
 // codehub-publisher (CodeHub 评论发布器)
 export {
@@ -627,7 +651,27 @@ export { OpencodeProcessManager } from './opencode-process-manager.js';
 export type { OpencodeServeStatus, OpencodeStartResult, OpencodeStopResult } from './opencode-process-manager.js';
 
 // review-runner（通过 opencode CLI 执行审查）
-export { runReviewViaOpencode } from './review-runner.js';
+export { runReviewViaOpencode, historyStore } from './review-runner.js';
+
+// findings-history-store (Task 4：findings 历史持久化 store — 支撑报表指标计算)
+export { createFindingsHistoryStore } from './findings-history-store.js';
+export type { FindingHistoryRecord, FindingsHistoryStore, FindingsHistoryQuery } from './findings-history-store.js';
+
+// reports (Task 9：报表聚合计算 — 接纳率/拦截/趋势/按规则/作者/仓库维度统计)
+export {
+  computeOverview,
+  computeTrend,
+  computeByRule,
+  computeByAuthor,
+  computeByRepo,
+} from './reports.js';
+export type {
+  ReportsOverview,
+  TrendPoint,
+  ByRuleItem,
+  ByAuthorItem,
+  ByRepoItem,
+} from './reports.js';
 
 // Mock CodeHub Server（本地 HTTP 服务模拟 CodeHub API v3，用于无内网环境下的集成测试）
 export { startMockCodeHubServer } from './mock-codehub-server.js';
