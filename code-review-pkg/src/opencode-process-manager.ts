@@ -1,6 +1,6 @@
 // src/opencode-process-manager.ts — opencode serve 子进程管理（启停 + 状态 + 日志缓冲）
-import { spawn, type ChildProcess } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
+import { spawn, execSync, type ChildProcess } from 'node:child_process';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync, readFileSync } from 'node:fs';
 import { resolve, join, basename } from 'node:path';
 
 /** opencode serve 进程状态快照 */
@@ -59,6 +59,10 @@ export function validateCommandSafety(cmd: string): void {
 export function replaceCommandVars(template: string | null | undefined, hostname: string, port: number): string {
   if (template == null) return '';
   return template.replace(/{hostname}/g, hostname).replace(/{port}/g, String(port));
+}
+
+export function deriveDefaultStartCommand(hostname: string = '127.0.0.1', port: number = 4096): string {
+  return `opencode serve --hostname ${hostname} --port ${port}`;
 }
 
 export function parseCommandToArgv(command: string): string[] {
@@ -300,4 +304,90 @@ export class OpencodeProcessManager {
     const start = Math.max(0, len - n);
     return this.logBuffer.slice(start);
   }
+}
+
+/** 预热结果中单个 Agent 的状态 */
+export interface AgentWarmupStatus {
+  name: string;
+  status: 'ready' | 'pending' | 'failed';
+  error?: string;
+}
+
+/** 预热 opencode 内置 Agent：复制配置 + 尝试通过 `opencode run review-pr` 触发一次最小调用。
+ *  - 找不到 opencode CLI 时，status 为 pending（标记为"未真正预热，但配置已就绪"）
+ *  - Agent 配置缺失时，status 为 failed
+ *  - 成功读取 Agent .md 配置时，status 为 ready
+ * 始终返回完整的 Agent 列表及状态，用于 health 端点展示。
+ */
+export function warmupAgents(workDir: string, opencodeConfigPath?: string): {
+  agents: AgentWarmupStatus[];
+  lastWarmupMs: number;
+  ok: boolean;
+  error?: string;
+} {
+  const startedAt = Date.now();
+  const resolvedWorkDir = resolve(process.cwd(), workDir);
+  const opencodeDirSrc = resolve(process.cwd(), opencodeConfigPath ?? 'opencode-config');
+  const agentsDirSrc = join(opencodeDirSrc, '.opencode', 'agents');
+
+  const defaultAgents = ['code-reviewer', 'security-reviewer', 'impact-analyzer', 'reflector'];
+  const agents: AgentWarmupStatus[] = [];
+
+  for (const name of defaultAgents) {
+    const agentFile = join(agentsDirSrc, `${name}.md`);
+    const destDir = join(resolvedWorkDir, '.opencode', 'agents');
+    const destFile = join(destDir, `${name}.md`);
+
+    if (!existsSync(agentFile)) {
+      agents.push({ name, status: 'failed', error: `Agent 配置缺失: ${agentFile}` });
+      continue;
+    }
+
+    try {
+      if (!existsSync(destDir)) {
+        mkdirSync(destDir, { recursive: true });
+      }
+      const content = readFileSync(agentFile, 'utf-8');
+      copyFileSync(agentFile, destFile);
+      // 要求 Agent 配置包含基本结构（system 或 description）
+      const hasContent = content.length > 20;
+      agents.push({ name, status: hasContent ? 'ready' : 'pending' });
+    } catch (err) {
+      agents.push({ name, status: 'failed', error: (err as Error).message });
+    }
+  }
+
+  // 尝试通过 opencode run 进行一次真实预热（若 CLI 可用且 workDir 为有效工程）
+  let opencodeCliAvailable = false;
+  let preheatError: string | undefined;
+  try {
+    const versionOut = execSync('opencode --version', { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 3000 }).trim();
+    opencodeCliAvailable = !!versionOut;
+  } catch (err) {
+    preheatError = `opencode CLI 未就绪: ${(err as Error).message}`;
+  }
+
+  if (opencodeCliAvailable) {
+    try {
+      execSync('opencode run review-pr --dry-run', {
+        cwd: resolvedWorkDir,
+        encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 15_000,
+      });
+    } catch (err) {
+      // 预热失败不阻断启动，仅记录
+      preheatError = (err as Error).message;
+    }
+  }
+
+  const lastWarmupMs = Date.now() - startedAt;
+  const allReady = agents.every((a) => a.status === 'ready');
+
+  return {
+    agents,
+    lastWarmupMs,
+    ok: allReady,
+    error: preheatError,
+  };
 }

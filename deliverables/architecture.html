@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Code Review — 架构可视化</title>
+<style>
+:root {
+  --bg: #0a0e1a;
+  --surface: #111827;
+  --surface-2: #1a2332;
+  --border: #263048;
+  --text: #e2e8f0;
+  --text-muted: #7b8ba8;
+  --accent: #5b9dff;
+  --accent-2: #a78bfa;
+  --layer-1: #6366f1;
+  --layer-2: #8b5cf6;
+  --layer-3: #ec4899;
+  --layer-4: #f59e0b;
+  --layer-5: #10b981;
+  --layer-6: #06b6d4;
+  --radius: 14px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  padding: 32px 24px;
+  overflow-x: hidden;
+}
+
+.container { max-width: 1200px; margin: 0 auto; }
+
+.header {
+  text-align: center;
+  margin-bottom: 48px;
+}
+
+.header h1 {
+  font-size: 32px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  background: linear-gradient(135deg, #5b9dff, #a78bfa, #ec4899);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.header .subtitle {
+  color: var(--text-muted);
+  font-size: 15px;
+  margin-top: 8px;
+}
+
+.section-title {
+  font-size: 18px;
+  font-weight: 700;
+  margin: 40px 0 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.section-title .num {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+/* ========== 六层架构 ========== */
+
+.architecture {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 32px;
+  position: relative;
+  overflow: hidden;
+}
+
+.layer {
+  display: flex;
+  align-items: stretch;
+  margin-bottom: 12px;
+  position: relative;
+  transition: transform 0.2s;
+}
+
+.layer:hover { transform: translateX(4px); }
+
+.layer:last-child { margin-bottom: 0; }
+
+.layer-label {
+  width: 180px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 16px 20px;
+  border-radius: 10px 0 0 10px;
+  position: relative;
+}
+
+.layer-label .layer-num {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  opacity: 0.7;
+}
+
+.layer-label .layer-name {
+  font-size: 16px;
+  font-weight: 700;
+  margin-top: 4px;
+}
+
+.layer-content {
+  flex: 1;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-left: none;
+  border-radius: 0 10px 10px 0;
+  padding: 14px 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.layer-tag {
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid var(--border);
+}
+
+.layer-desc {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+/* Layer colors */
+.layer:nth-child(1) .layer-label { background: linear-gradient(135deg, #4f46e5, #6366f1); }
+.layer:nth-child(2) .layer-label { background: linear-gradient(135deg, #7c3aed, #8b5cf6); }
+.layer:nth-child(3) .layer-label { background: linear-gradient(135deg, #db2777, #ec4899); }
+.layer:nth-child(4) .layer-label { background: linear-gradient(135deg, #d97706, #f59e0b); }
+.layer:nth-child(5) .layer-label { background: linear-gradient(135deg, #059669, #10b981); }
+.layer:nth-child(6) .layer-label { background: linear-gradient(135deg, #0891b2, #06b6d4); }
+
+.flow-arrow {
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 18px;
+  margin: 6px 0;
+  letter-spacing: 8px;
+}
+
+/* ========== 状态机 ========== */
+
+.state-machine {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 32px;
+}
+
+.state-diagram {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 0;
+  flex-wrap: wrap;
+  margin: 20px 0;
+}
+
+.state-node {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.state-circle {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  border: 2px solid var(--border);
+  background: var(--surface-2);
+  position: relative;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.state-node:hover .state-circle {
+  transform: scale(1.08);
+  box-shadow: 0 0 20px rgba(91, 157, 255, 0.4);
+}
+
+.state-queued .state-circle { border-color: #6366f1; color: #a5b4fc; }
+.state-running .state-circle { border-color: #f59e0b; color: #fbbf24; animation: pulse 2s infinite; }
+.state-completed .state-circle { border-color: #10b981; color: #6ee7b7; }
+.state-failed .state-circle { border-color: #ef4444; color: #fca5a5; }
+.state-cancelled .state-circle { border-color: #6b7280; color: #9ca3af; }
+
+@keyframes pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.3); }
+  50% { box-shadow: 0 0 0 8px rgba(245, 158, 11, 0); }
+}
+
+.state-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.state-arrow {
+  width: 40px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 18px;
+  position: relative;
+  margin-bottom: 20px;
+}
+
+.state-arrow-label {
+  position: absolute;
+  top: -18px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  background: var(--bg);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+/* ========== Worker Pool ========== */
+
+.worker-pool {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 32px;
+}
+
+.pool-visual {
+  display: flex;
+  gap: 20px;
+  justify-content: center;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  margin: 24px 0;
+}
+
+.pool-component {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  min-width: 160px;
+  text-align: center;
+}
+
+.pool-component h4 {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 10px;
+  color: var(--accent);
+}
+
+.worker-slots {
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+}
+
+.worker-slot {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  color: var(--text-muted);
+  transition: all 0.2s;
+}
+
+.worker-slot.active {
+  background: linear-gradient(135deg, rgba(91, 157, 255, 0.3), rgba(167, 139, 250, 0.3));
+  border-color: var(--accent);
+  color: var(--accent);
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+
+.task-queue {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+}
+
+.task-item {
+  padding: 6px 14px;
+  border-radius: 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: 'SF Mono', monospace;
+}
+
+.task-item.priority-high { border-color: var(--critical); color: var(--critical); }
+.task-item.priority-normal { border-color: var(--accent); color: var(--accent); }
+
+.pool-flow {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0;
+}
+
+.flow-line {
+  height: 2px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  flex: 1;
+  max-width: 60px;
+  position: relative;
+}
+
+.flow-line::after {
+  content: '→';
+  position: absolute;
+  right: -8px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--accent);
+}
+
+.legend {
+  display: flex;
+  justify-content: center;
+  gap: 24px;
+  flex-wrap: wrap;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+
+.footer {
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 12px;
+  margin-top: 40px;
+  padding: 20px;
+  border-top: 1px solid var(--border);
+}
+
+@media (max-width: 768px) {
+  .stats-grid { grid-template-columns: repeat(2, 1fr); }
+  .layer-label { width: 120px; padding: 12px; }
+  .layer-label .layer-name { font-size: 13px; }
+  .state-diagram { gap: 4px; }
+  .state-arrow { width: 20px; font-size: 14px; }
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="header">
+    <h1>Code Review 架构可视化</h1>
+    <div class="subtitle">六层架构 · 会话状态机 · 并发 Worker 池模型</div>
+  </div>
+
+  <!-- ==================== 六层架构 ==================== -->
+
+  <div class="section-title"><span class="num">1</span>六层架构</div>
+
+  <div class="architecture">
+
+    <div class="layer">
+      <div class="layer-label">
+        <div class="layer-num">Layer 1</div>
+        <div class="layer-name">Trigger · 触发层</div>
+      </div>
+      <div class="layer-content">
+        <span class="layer-tag">HTTP API</span>
+        <span class="layer-tag">CLI</span>
+        <span class="layer-tag">Webhook</span>
+        <span class="layer-tag">SSE 流</span>
+        <span class="layer-desc">接收审查请求, 支持多种触发方式</span>
+      </div>
+    </div>
+
+    <div class="flow-arrow">▼</div>
+
+    <div class="layer">
+      <div class="layer-label">
+        <div class="layer-num">Layer 2</div>
+        <div class="layer-name">Orchestrator · 编排层</div>
+      </div>
+      <div class="layer-content">
+        <span class="layer-tag">DAG 编排</span>
+        <span class="layer-tag">Agent 调度</span>
+        <span class="layer-tag">重试降级</span>
+        <span class="layer-tag">超时控制</span>
+        <span class="layer-desc">Agent DAG 编排, 异常降级与 fallback</span>
+      </div>
+    </div>
+
+    <div class="flow-arrow">▼</div>
+
+    <div class="layer">
+      <div class="layer-label">
+        <div class="layer-num">Layer 3</div>
+        <div class="layer-name">Pipeline · 管道层</div>
+      </div>
+      <div class="layer-content">
+        <span class="layer-tag">Diff 解析</span>
+        <span class="layer-tag">文件过滤</span>
+        <span class="layer-tag">Bundle 打包</span>
+        <span class="layer-tag">规则匹配</span>
+        <span class="layer-tag">AI 反思</span>
+        <span class="layer-desc">确定性管道: 过滤→打包→规则→AI→后处理</span>
+      </div>
+    </div>
+
+    <div class="flow-arrow">▼</div>
+
+    <div class="layer">
+      <div class="layer-label">
+        <div class="layer-num">Layer 4</div>
+        <div class="layer-name">Agent · 代理层</div>
+      </div>
+      <div class="layer-content">
+        <span class="layer-tag">Code Reviewer</span>
+        <span class="layer-tag">Impact Analyzer</span>
+        <span class="layer-tag">Security Reviewer</span>
+        <span class="layer-tag">Reflector</span>
+        <span class="layer-tag">Model Router</span>
+        <span class="layer-desc">多 Agent 协作, 按复杂度路由 LLM 模型</span>
+      </div>
+    </div>
+
+    <div class="flow-arrow">▼</div>
+
+    <div class="layer">
+      <div class="layer-label">
+        <div class="layer-num">Layer 5</div>
+        <div class="layer-name">State · 状态层</div>
+      </div>
+      <div class="layer-content">
+        <span class="layer-tag">会话存储</span>
+        <span class="layer-tag">Findings 持久化</span>
+        <span class="layer-tag">三级缓存</span>
+        <span class="layer-tag">反馈闭环</span>
+        <span class="layer-tag">自愈</span>
+        <span class="layer-desc">状态机驱动, 支持断点续审与自愈</span>
+      </div>
+    </div>
+
+    <div class="flow-arrow">▼</div>
+
+    <div class="layer">
+      <div class="layer-label">
+        <div class="layer-num">Layer 6</div>
+        <div class="layer-name">Output · 输出层</div>
+      </div>
+      <div class="layer-content">
+        <span class="layer-tag">CodeHub 评论</span>
+        <span class="layer-tag">报表导出</span>
+        <span class="layer-tag">Webhook 通知</span>
+        <span class="layer-tag">告警</span>
+        <span class="layer-tag">SSE 流</span>
+        <span class="layer-desc">多渠道输出: 评论/报表/告警/通知</span>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ==================== 会话状态机 ==================== -->
+
+  <div class="section-title"><span class="num">2</span>会话状态机</div>
+
+  <div class="state-machine">
+
+    <div class="state-diagram">
+      <div class="state-node state-queued">
+        <div class="state-circle">QUEUED</div>
+        <div class="state-label">排队中</div>
+      </div>
+
+      <div class="state-arrow"><span class="state-arrow-label">pick up</span>→</div>
+
+      <div class="state-node state-running">
+        <div class="state-circle">RUNNING</div>
+        <div class="state-label">执行中</div>
+      </div>
+
+      <div class="state-arrow"><span class="state-arrow-label">complete</span>→</div>
+
+      <div class="state-node state-completed">
+        <div class="state-circle">COMPLETED</div>
+        <div class="state-label">已完成</div>
+      </div>
+    </div>
+
+    <div class="state-diagram" style="margin-top: 8px;">
+      <div class="state-node state-running">
+        <div class="state-circle">RUNNING</div>
+        <div class="state-label">执行中</div>
+      </div>
+
+      <div class="state-arrow"><span class="state-arrow-label">error</span>→</div>
+
+      <div class="state-node state-failed">
+        <div class="state-circle">FAILED</div>
+        <div class="state-label">失败</div>
+      </div>
+
+      <div class="state-arrow"><span class="state-arrow-label">retry</span>→</div>
+
+      <div class="state-node state-queued">
+        <div class="state-circle">QUEUED</div>
+        <div class="state-label">重试</div>
+      </div>
+    </div>
+
+    <div class="state-diagram" style="margin-top: 8px;">
+      <div class="state-node state-running">
+        <div class="state-circle">RUNNING</div>
+        <div class="state-label">执行中</div>
+      </div>
+
+      <div class="state-arrow"><span class="state-arrow-label">cancel</span>→</div>
+
+      <div class="state-node state-cancelled">
+        <div class="state-circle">CANCELLED</div>
+        <div class="state-label">已取消</div>
+      </div>
+    </div>
+
+    <div style="text-align:center; color: var(--text-muted); font-size: 13px; margin-top: 16px;">
+      ReviewSession 状态流转: queued → running → completed/failed/cancelled · 支持失败重试与取消
+    </div>
+
+  </div>
+
+  <!-- ==================== Worker Pool ==================== -->
+
+  <div class="section-title"><span class="num">3</span>并发 Worker 池模型</div>
+
+  <div class="worker-pool">
+
+    <div class="pool-visual">
+
+      <div class="pool-component">
+        <h4>提交入口</h4>
+        <div style="font-size:11px; color: var(--text-muted);">workerPool.submit()</div>
+        <div style="margin-top: 8px; padding: 8px; background: var(--bg); border-radius: 6px; font-family: monospace; font-size: 10px; color: var(--text-muted);">
+          POST /api/v1/review/start
+        </div>
+      </div>
+
+      <div class="pool-flow">
+        <div class="flow-line"></div>
+      </div>
+
+      <div class="pool-component">
+        <h4>队列调度 (Poll)</h4>
+        <div class="task-queue">
+          <div class="task-item priority-high">MR !1 · high</div>
+          <div class="task-item priority-normal">MR !2 · normal</div>
+          <div class="task-item priority-normal">MR !3 · normal</div>
+        </div>
+        <div style="font-size:10px; color: var(--text-muted); margin-top: 6px;">按优先级排序, 每 500ms 轮询</div>
+      </div>
+
+      <div class="pool-flow">
+        <div class="flow-line"></div>
+      </div>
+
+      <div class="pool-component">
+        <h4>Worker 池 (Concurrency=4)</h4>
+        <div class="worker-slots">
+          <div class="worker-slot active">W1</div>
+          <div class="worker-slot active">W2</div>
+          <div class="worker-slot">W3</div>
+          <div class="worker-slot">W4</div>
+        </div>
+        <div style="font-size:10px; color: var(--text-muted); margin-top: 6px;">最多 N 个并行执行</div>
+      </div>
+
+      <div class="pool-flow">
+        <div class="flow-line"></div>
+      </div>
+
+      <div class="pool-component">
+        <h4>执行 & 回调</h4>
+        <div style="font-size:11px; color: var(--text-muted); margin-top: 8px;">run(task, onProgress)</div>
+        <div style="margin-top: 6px; display: flex; gap: 4px; justify-content: center;">
+          <span style="font-size: 10px; padding: 2px 6px; background: rgba(16,185,129,0.15); color: #6ee7b7; border-radius: 4px;">complete</span>
+          <span style="font-size: 10px; padding: 2px 6px; background: rgba(248,113,113,0.15); color: #fca5a5; border-radius: 4px;">error</span>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="legend">
+      <div class="legend-item">
+        <div class="legend-dot" style="background: var(--accent);"></div>
+        活跃 Worker
+      </div>
+      <div class="legend-item">
+        <div class="legend-dot" style="background: var(--bg); border: 1px solid var(--border);"></div>
+        空闲 Worker
+      </div>
+      <div class="legend-item">
+        <div class="legend-dot" style="background: var(--critical);"></div>
+        高优先级任务
+      </div>
+      <div class="legend-item">
+        <div class="legend-dot" style="background: var(--accent); opacity: 0.3;"></div>
+        普通优先级
+      </div>
+      <div class="legend-item">
+        <div class="legend-dot" style="background: #6ee7b7;"></div>
+        完成回调
+      </div>
+    </div>
+
+    <div style="text-align:center; color: var(--text-muted); font-size: 13px; margin-top: 16px;">
+      ReviewWorkerPool: 基于并发限制的任务调度器 · 事件驱动 (progress/complete/error) · 支持自定义 ReviewRunner 注入
+    </div>
+
+  </div>
+
+  <div class="footer">
+    Code Review Package · Architecture Visualization · 2026
+  </div>
+
+</div>
+</body>
+</html>

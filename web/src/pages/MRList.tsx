@@ -768,7 +768,13 @@ function MRList() {
                 return (
                   <div
                     key={mr.id}
-                    onClick={() => navigate(`/mrs/${mr.iid}`)}
+                    onClick={() => {
+                      if (mr.iid != null && !isNaN(mr.iid)) {
+                        navigate(`/mrs/${mr.iid}`);
+                      } else {
+                        message.error('无效的 MR ID，无法查看详情');
+                      }
+                    }}
                     style={{
                       background: '#fff',
                       border: `1px solid ${isSelected ? '#3b6bff' : '#e2e8f0'}`,
@@ -1019,9 +1025,15 @@ function MRList() {
                                 size="small"
                                 type="link"
                                 disabled={!isReviewed || isReviewing}
-                                onClick={() => navigate(`/mrs/${mr.iid}`)}
-                              >
-                                查看报告
+                                onClick={() => {
+                      if (mr.iid != null && !isNaN(mr.iid)) {
+                        navigate(`/mrs/${mr.iid}`);
+                      } else {
+                        message.error('无效的 MR ID，无法查看详情');
+                      }
+                    }}
+                            >
+                              查看报告
                               </Button>
                             </div>
                           </div>

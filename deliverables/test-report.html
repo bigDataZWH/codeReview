@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Code Review — E2E 测试报告</title>
+<style>
+:root {
+  --bg: #0b0f17;
+  --surface: #121826;
+  --surface-2: #1a2236;
+  --border: #253049;
+  --text: #e4e8f1;
+  --text-muted: #8894ae;
+  --accent: #5b9dff;
+  --accent-glow: rgba(91, 157, 255, 0.25);
+  --pass: #34d399;
+  --pass-bg: rgba(52, 211, 153, 0.12);
+  --fail: #f87171;
+  --fail-bg: rgba(248, 113, 113, 0.12);
+  --warn: #fbbf24;
+  --critical: #ef4444;
+  --high: #f97316;
+  --medium: #eab308;
+  --low: #6b7280;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  padding: 32px 24px;
+  line-height: 1.6;
+}
+
+.container {
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 32px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.header h1 {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  background: linear-gradient(135deg, #5b9dff, #a78bfa);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.header .subtitle {
+  color: var(--text-muted);
+  font-size: 14px;
+  margin-top: 4px;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.badge.pass { color: var(--pass); border-color: rgba(52, 211, 153, 0.3); background: var(--pass-bg); }
+.badge.fail { color: var(--fail); border-color: rgba(248, 113, 113, 0.3); background: var(--fail-bg); }
+
+.dot { width: 6px; height: 6px; border-radius: 50%; }
+.badge.pass .dot { background: var(--pass); box-shadow: 0 0 8px var(--pass); }
+.badge.fail .dot { background: var(--fail); box-shadow: 0 0 8px var(--fail); }
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.stat-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  position: relative;
+  overflow: hidden;
+}
+
+.stat-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+}
+
+.stat-card.pass::before { background: linear-gradient(90deg, var(--pass), #10b981); }
+.stat-card.duration::before { background: linear-gradient(90deg, var(--accent), #818cf8); }
+.stat-card.critical::before { background: linear-gradient(90deg, var(--critical), #dc2626); }
+.stat-card.retry::before { background: linear-gradient(90deg, var(--warn), #f59e0b); }
+
+.stat-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.stat-value {
+  font-size: 36px;
+  font-weight: 700;
+  margin-top: 8px;
+  letter-spacing: -0.03em;
+}
+
+.stat-value small {
+  font-size: 14px;
+  color: var(--text-muted);
+  font-weight: 500;
+  margin-left: 4px;
+}
+
+.stat-card.pass .stat-value { color: var(--pass); }
+.stat-card.duration .stat-value { color: var(--accent); }
+.stat-card.critical .stat-value { color: var(--critical); }
+.stat-card.retry .stat-value { color: var(--warn); }
+
+.severity-breakdown {
+  display: flex;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.severity-item {
+  flex: 1;
+  text-align: center;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+.severity-item .count {
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.severity-item.critical .count { color: var(--critical); }
+.severity-item.high .count { color: var(--high); }
+.severity-item.medium .count { color: var(--medium); }
+
+.severity-item .label {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.progress-section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+  margin-bottom: 24px;
+}
+
+.progress-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.progress-header h2 {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.progress-bar {
+  height: 8px;
+  background: var(--surface-2);
+  border-radius: 999px;
+  overflow: hidden;
+  position: relative;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.8s ease;
+  background: linear-gradient(90deg, var(--pass), #10b981);
+  box-shadow: 0 0 12px rgba(52, 211, 153, 0.5);
+}
+
+.progress-text {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-top: 8px;
+}
+
+.scenarios-section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-bottom: 24px;
+}
+
+.scenarios-header {
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.scenarios-header h2 {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.table-wrap { overflow-x: auto; }
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th, td {
+  padding: 14px 24px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+
+th {
+  font-weight: 600;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: var(--surface-2);
+}
+
+tr:last-child td { border-bottom: none; }
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.status-pill.pass { color: var(--pass); background: var(--pass-bg); }
+.status-pill.fail { color: var(--fail); background: var(--fail-bg); }
+
+.status-pill .dot { width: 6px; height: 6px; border-radius: 50%; }
+.status-pill.pass .dot { background: var(--pass); }
+.status-pill.fail .dot { background: var(--fail); }
+
+.duration-bar {
+  display: inline-block;
+  width: 80px;
+  height: 4px;
+  background: var(--surface-2);
+  border-radius: 2px;
+  overflow: hidden;
+  vertical-align: middle;
+  margin-right: 8px;
+}
+
+.duration-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+}
+
+.footer {
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 24px;
+  border-top: 1px solid var(--border);
+}
+
+.tag-mock {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  background: rgba(91, 157, 255, 0.15);
+  color: var(--accent);
+  border: 1px solid rgba(91, 157, 255, 0.3);
+  margin-left: 8px;
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="header">
+    <div>
+      <h1>Code Review E2E 测试报告</h1>
+      <div class="subtitle">Web 端到端流程测试 · 7 场景 · Mock 模式</div>
+    </div>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <span class="badge pass"><span class="dot"></span>全部通过</span>
+      <span class="tag-mock">Mock 模式</span>
+    </div>
+  </div>
+
+  <div class="stats-grid">
+    <div class="stat-card pass">
+      <div class="stat-label">通过率</div>
+      <div class="stat-value">100<small>%</small></div>
+    </div>
+    <div class="stat-card duration">
+      <div class="stat-label">总耗时</div>
+      <div class="stat-value">3.8<small>秒</small></div>
+    </div>
+    <div class="stat-card critical">
+      <div class="stat-label">发现的严重度</div>
+      <div style="margin-top: 8px;">
+        <div class="severity-breakdown">
+          <div class="severity-item critical">
+            <div class="count">1</div>
+            <div class="label">Critical</div>
+          </div>
+          <div class="severity-item high">
+            <div class="count">1</div>
+            <div class="label">High</div>
+          </div>
+          <div class="severity-item medium">
+            <div class="count">1</div>
+            <div class="label">Medium</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="stat-card retry">
+      <div class="stat-label">重试次数</div>
+      <div class="stat-value">0</div>
+    </div>
+  </div>
+
+  <div class="progress-section">
+    <div class="progress-header">
+      <h2>场景完成进度</h2>
+      <span style="color: var(--pass); font-weight: 600; font-size: 14px;">7 / 7 通过</span>
+    </div>
+    <div class="progress-bar">
+      <div class="progress-fill" style="width: 100%;"></div>
+    </div>
+    <div class="progress-text">所有 7 个核心场景全部通过，审查自检器确认召回质量满足临界/高级别要求。</div>
+  </div>
+
+  <div class="scenarios-section">
+    <div class="scenarios-header">
+      <h2>场景详情</h2>
+      <span style="color: var(--text-muted); font-size: 13px;">按执行顺序排列</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>场景</th>
+            <th>端点</th>
+            <th>状态</th>
+            <th>耗时</th>
+            <th>重试</th>
+            <th>备注</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>S1: 一键配置健康检查</td>
+            <td><code style="color: var(--accent);">GET /api/v1/opencode/health</code></td>
+            <td><span class="status-pill pass"><span class="dot"></span>pass</span></td>
+            <td>55ms</td>
+            <td>0</td>
+            <td style="color: var(--text-muted);">initialized + agents 正常</td>
+          </tr>
+          <tr>
+            <td>S2: 启动 opencode</td>
+            <td><code style="color: var(--accent);">POST /api/v1/services/start-all</code></td>
+            <td><span class="status-pill pass"><span class="dot"></span>pass</span></td>
+            <td>0ms</td>
+            <td>0</td>
+            <td style="color: var(--text-muted);">Mock 模式跳过</td>
+          </tr>
+          <tr>
+            <td>S3: 浏览 MR 列表</td>
+            <td><code style="color: var(--accent);">GET /api/v1/codehub/mrs</code></td>
+            <td><span class="status-pill pass"><span class="dot"></span>pass</span></td>
+            <td>20ms</td>
+            <td>0</td>
+            <td style="color: var(--text-muted);">返回 3 个 MR</td>
+          </tr>
+          <tr>
+            <td>S4: 触发检视 + 自检</td>
+            <td><code style="color: var(--accent);">POST /api/v1/review/start</code></td>
+            <td><span class="status-pill pass"><span class="dot"></span>pass</span></td>
+            <td>809ms</td>
+            <td>0</td>
+            <td style="color: var(--text-muted);">Critical=1, High=1, Medium=1, recalled=true</td>
+          </tr>
+          <tr>
+            <td>S5: 查看会话</td>
+            <td><code style="color: var(--accent);">GET /api/v1/review/:sessionId</code></td>
+            <td><span class="status-pill pass"><span class="dot"></span>pass</span></td>
+            <td>806ms</td>
+            <td>0</td>
+            <td style="color: var(--text-muted);">status=completed, 5 findings</td>
+          </tr>
+          <tr>
+            <td>S6: 持久化会话</td>
+            <td>会话存储验证</td>
+            <td><span class="status-pill pass"><span class="dot"></span>pass</span></td>
+            <td>817ms</td>
+            <td>0</td>
+            <td style="color: var(--text-muted);">重载后可检索</td>
+          </tr>
+          <tr>
+            <td>S7: SSE 流</td>
+            <td><code style="color: var(--accent);">GET /api/v1/review/:sessionId/stream</code></td>
+            <td><span class="status-pill pass"><span class="dot"></span>pass</span></td>
+            <td>1320ms</td>
+            <td>0</td>
+            <td style="color: var(--text-muted);">收到 2 个 progress 事件</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="footer">
+    Code Review Package · E2E Test Report · Generated 2026-08-10 · Mock Mode
+  </div>
+
+</div>
+</body>
+</html>

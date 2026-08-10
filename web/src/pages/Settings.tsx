@@ -556,15 +556,12 @@ function QuickConfigWizard({
           securityReview: (reviewValues.securityReview as boolean) ?? true,
           defaultLanguage: (reviewValues.defaultLanguage as string) || 'zh-CN',
         },
-        opencodeManager: {
-          startCommand: 'opencode serve --hostname {hostname} --port {port}',
-          workDir: './',
-        },
       };
 
       const res = await codehubApi.quickConfigure(input);
       if (res?.ok) {
-        message.success('配置已保存');
+        const derivedCmd: string | undefined = (res as { startCommand?: string }).startCommand;
+        message.success(derivedCmd ? `配置已保存（启动命令已自动推导：${derivedCmd}）` : '配置已保存');
         const startRes = (await codehubApi.startAllServices()) as StartAllResult;
         setConfigResult(startRes);
         const failed = Object.entries(startRes.services)

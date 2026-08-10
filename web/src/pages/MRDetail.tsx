@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Card, Tag, Space, Button, List, Avatar, Alert, Spin,
   Breadcrumb, Tooltip, Divider, Select, Modal, message, Tabs,
@@ -71,6 +71,13 @@ function MRDetail() {
   const [batchResult, setBatchResult] = useState<{ ok: boolean; total: number; success: number; failed: number; results: Array<{ findingId: string; ok: boolean; commentId?: number; error?: string }> } | null>(null);
   const [testCases, setTestCases] = useState<TestCase[]>([]);
   const mrIidNum = parseInt(mrIid || '0', 10);
+
+  const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
+  const [reviewProgress, setReviewProgress] = useState<number>(0);
+  const [reviewStatus, setReviewStatus] = useState<'idle' | 'queued' | 'running' | 'completed' | 'failed'>('idle');
+  const [reviewFindings, setReviewFindings] = useState<Finding[]>([]);
+  const [reviewError, setReviewError] = useState<string | null>(null);
+  const reviewEventSourceRef = useRef<EventSource | null>(null);
 
   const { data: mrData, isLoading: mrLoading } = useQuery({
     queryKey: ['mr', mrIidNum],
@@ -249,6 +256,83 @@ function MRDetail() {
     if (findings.length > 0 && testCases.length === 0) handleGenerateTestCases();
   }, [findings, changes]);
 
+  useEffect(() => {
+    const saved = localStorage.getItem(`review:mr:${mrIidNum}`);
+    if (saved) {
+      setReviewSessionId(saved);
+      setReviewStatus('queued');
+    }
+    return () => {
+      if (reviewEventSourceRef.current) {
+        reviewEventSourceRef.current.close();
+        reviewEventSourceRef.current = null;
+      }
+    };
+  }, [mrIidNum]);
+
+  const openReviewStream = (sessionId: string) => {
+    if (reviewEventSourceRef.current) {
+      reviewEventSourceRef.current.close();
+    }
+    const url = codehubApi.getReviewStreamUrl(sessionId);
+    const es = new EventSource(url);
+    reviewEventSourceRef.current = es;
+
+    es.addEventListener('progress', (e: MessageEvent) => {
+      const data = JSON.parse(e.data);
+      setReviewStatus('running');
+      setReviewProgress(data.progress ?? 0);
+    });
+
+    es.addEventListener('finding', (e: MessageEvent) => {
+      const data = JSON.parse(e.data);
+      setReviewFindings((prev) => [...prev, data as Finding]);
+    });
+
+    es.addEventListener('complete', () => {
+      setReviewStatus('completed');
+      setReviewProgress(100);
+      queryClient.invalidateQueries({ queryKey: ['mr-findings', mrIidNum] });
+    });
+
+    es.addEventListener('error', (e: MessageEvent) => {
+      const data = e.data ? JSON.parse(e.data) : null;
+      setReviewStatus('failed');
+      setReviewError(data?.error ?? '检视流连接错误');
+    });
+
+    es.onerror = () => {
+      setReviewError('EventSource 连接错误');
+      es.close();
+      reviewEventSourceRef.current = null;
+    };
+  };
+
+  const startReview = async () => {
+    setReviewError(null);
+    setReviewFindings([]);
+    setReviewProgress(0);
+    setReviewStatus('queued');
+
+    const result = await codehubApi.startReview(mrIidNum, activeRepoId ?? undefined);
+
+    if (!result.ok || !result.sessionId) {
+      setReviewStatus('failed');
+      setReviewError(result.error ?? '启动检视失败');
+      return;
+    }
+
+    setReviewSessionId(result.sessionId);
+    localStorage.setItem(`review:mr:${mrIidNum}`, result.sessionId);
+    openReviewStream(result.sessionId);
+  };
+
+  const resumeReview = () => {
+    if (reviewSessionId) {
+      openReviewStream(reviewSessionId);
+    }
+  };
+
   const handleUpdateStatus = (id: string, status: TestCase['status']) => {
     setTestCases((prev) => prev.map((tc) => (tc.id === id ? { ...tc, status } : tc)));
   };
@@ -301,7 +385,27 @@ function MRDetail() {
     });
   };
 
-  if (!mrIidNum) return <Alert type="error" message="无效的 MR ID" />;
+  if (!mrIidNum) {
+    return (
+      <div style={{ maxWidth: 600, margin: '60px auto', padding: '0 24px' }}>
+        <Alert
+          type="error"
+          showIcon
+          message="无效的 MR ID"
+          description="无法识别的 MR 编号，请从列表页重新选择。"
+          action={
+            <Button
+              type="primary"
+              icon={<ArrowLeftOutlined />}
+              onClick={() => navigate('/mrs')}
+            >
+              返回列表
+            </Button>
+          }
+        />
+      </div>
+    );
+  }
 
   const criticalCount = findingsBySeverity['critical'] || 0;
   const highCount = findingsBySeverity['high'] || 0;
@@ -819,6 +923,63 @@ function MRDetail() {
       <Spin spinning={mrLoading}>
         {mr && (
           <>
+            <Card
+              style={{ marginBottom: 16, borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }}
+              bodyStyle={{ padding: 20 }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+                <Space direction="vertical" size={8}>
+                  <Space>
+                    <AuditOutlined style={{ color: '#3b6bff', fontSize: 18 }} />
+                    <span style={{ fontWeight: 600, fontSize: 16, color: '#0f172a' }}>代码检视</span>
+                    {reviewStatus === 'idle' && <Tag color="default">待启动</Tag>}
+                    {reviewStatus === 'queued' && <Tag icon={<ClockCircleOutlined />} color="processing">排队中</Tag>}
+                    {reviewStatus === 'running' && <Tag icon={<ReloadOutlined spin />} color="processing">运行中</Tag>}
+                    {reviewStatus === 'completed' && <Tag icon={<CheckCircleOutlined />} color="success">已完成</Tag>}
+                    {reviewStatus === 'failed' && <Tag icon={<CloseCircleOutlined />} color="error">失败</Tag>}
+                  </Space>
+                  {reviewStatus === 'running' || reviewStatus === 'queued' ? (
+                    <div style={{ minWidth: 320 }}>
+                      <Progress
+                        percent={reviewProgress}
+                        status="active"
+                        strokeColor={{ '0%': '#3b6bff', '100%': '#10b981' }}
+                      />
+                    </div>
+                  ) : null}
+                  {reviewStatus === 'completed' && (
+                    <div style={{ fontSize: 13, color: '#166534' }}>
+                      检视完成，共发现 <strong>{reviewFindings.length || findings.length}</strong> 条检视意见
+                    </div>
+                  )}
+                  {reviewStatus === 'failed' && reviewError && (
+                    <Alert type="error" showIcon message="检视失败" description={reviewError} style={{ marginTop: 8 }} />
+                  )}
+                </Space>
+                <Space>
+                  {reviewSessionId && reviewStatus !== 'running' && reviewStatus !== 'queued' && (
+                    <Button
+                      icon={<ReloadOutlined />}
+                      onClick={resumeReview}
+                      style={{ borderRadius: 8 }}
+                    >
+                      恢复检视
+                    </Button>
+                  )}
+                  <Button
+                    type="primary"
+                    icon={<ThunderboltOutlined />}
+                    disabled={reviewStatus === 'running' || reviewStatus === 'queued'}
+                    loading={reviewStatus === 'running' || reviewStatus === 'queued'}
+                    onClick={startReview}
+                    style={{ borderRadius: 8 }}
+                  >
+                    触发检视
+                  </Button>
+                </Space>
+              </div>
+            </Card>
+
             <Card
               style={{ marginTop: 16, marginBottom: 16, borderRadius: 12, boxShadow: '0 1px 4px rgba(0,0,0,0.06)' }}
               bodyStyle={{ padding: 0 }}

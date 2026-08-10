@@ -20,6 +20,7 @@ import { useNavigate } from 'react-router-dom';
 import { Form } from 'antd';
 import dayjs from 'dayjs';
 import { codehubApi, type RepoInfo, type RepoConfig } from '@/api/codehub';
+import { useAppStore } from '@/store/app';
 import RepoCard, { formatSize, getStatus } from '@/components/repos/RepoCard';
 import { CloneRepoModal, CheckoutModal } from '@/components/repos/Modals';
 import EmptyRepos from '@/components/repos/EmptyRepos';
@@ -27,6 +28,7 @@ import EmptyRepos from '@/components/repos/EmptyRepos';
 function Repos() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const setActiveRepoId = useAppStore((s) => s.setActiveRepoId);
   const [cloneModalVisible, setCloneModalVisible] = useState(false);
   const [checkoutModalVisible, setCheckoutModalVisible] = useState(false);
   const [currentRepo, setCurrentRepo] = useState<string | null>(null);
@@ -179,7 +181,10 @@ function Repos() {
   };
 
   const openMRs = (repoId: string) => {
-    navigate(`/mrs?repo=${encodeURIComponent(repoId)}`);
+    if (repoId) {
+      setActiveRepoId(repoId);
+    }
+    navigate('/mrs');
   };
 
   const tableColumns = [
